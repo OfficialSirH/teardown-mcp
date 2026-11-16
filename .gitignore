@@ -1,0 +1,5 @@
+server/target/
+mod/mcp_inbox.lua
+mod/mcp_inbox.tmp
+savegame-backup-*.xml
+mod/mcp_config.lua

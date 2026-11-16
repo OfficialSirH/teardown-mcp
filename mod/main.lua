@@ -1,0 +1,442 @@
+#version 2
+#include "mcp_config.lua"
+
+-- MCP Bridge
+--
+-- Commands in : MCP_DIR/mcp_inbox.lua, written by the MCP server, polled here with loadfile
+--               (the game never re-reads savegame.xml, so commands cannot come through it).
+-- Results out : savegame.mod.mcp_* registry keys, which the game writes to savegame.xml within
+--               about half a second; the server reads them from that file.
+--
+-- Keys (all under savegame.mod.):
+--   mcp_session   session id of the server whose inbox was last accepted
+--   mcp_ack       id of the last executed command
+--   mcp_r<id>_n   number of result chunks of command <id>
+--   mcp_r<id>_<i> chunk i of the percent-encoded JSON result
+--   mcp_waiting   1 from a scene-reloading command until the new scene runs
+--   mcp_halt      1 while a scene load is pending (no command runs in the dying scene)
+--   mcp_scene     counts scenes started; the server waits for it to grow
+--   mcp_level     level path of the running scene
+
+local P = "savegame.mod.mcp_"
+local INBOX = MCP_DIR .. "mcp_inbox.lua"
+local CHUNK = 4000
+local MAXLEN = 240000
+local POLL = 0.1
+
+---------------------------------------------------------------------------
+-- JSON out
+---------------------------------------------------------------------------
+
+local function jstr(s)
+	s = string.gsub(s, '[%c"\\]', function(c)
+		if c == '"' then return '\\"' end
+		if c == "\\" then return "\\\\" end
+		if c == "\n" then return "\\n" end
+		if c == "\t" then return "\\t" end
+		return string.format("\\u%04x", string.byte(c))
+	end)
+	return '"' .. s .. '"'
+end
+
+local function enc(v, depth, seen)
+	local t = type(v)
+	if t == "nil" then return "null" end
+	if t == "boolean" then return v and "true" or "false" end
+	if t == "number" then
+		if v ~= v or v == math.huge or v == -math.huge then return "null" end
+		if v == math.floor(v) and math.abs(v) < 1e15 then return string.format("%d", v) end
+		return string.format("%.9g", v)
+	end
+	if t == "string" then return jstr(v) end
+	if t ~= "table" then return jstr(tostring(v)) end
+	if seen[v] then return '"<cycle>"' end
+	if depth > 12 then return '"<too deep>"' end
+	seen[v] = true
+	local n, count = #v, 0
+	for _ in pairs(v) do count = count + 1 end
+	local parts = {}
+	if count == n then
+		for i = 1, n do parts[i] = enc(v[i], depth + 1, seen) end
+		seen[v] = nil
+		return "[" .. table.concat(parts, ",") .. "]"
+	end
+	for k, x in pairs(v) do
+		parts[#parts + 1] = jstr(tostring(k)) .. ":" .. enc(x, depth + 1, seen)
+	end
+	seen[v] = nil
+	return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- Keep the stored value free of anything XML could mangle.
+local function pct(s)
+	return (string.gsub(s, "[^%w %.,:;{}%[%]_=+*/()!@#$^|~?-]", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end))
+end
+
+local function writeResult(id, tbl)
+	local s = pct(enc(tbl, 0, {}))
+	if #s > MAXLEN then
+		s = pct(enc({ ok = false, error = "result too large (" .. #s .. " chars), narrow the query" }, 0, {}))
+	end
+	local n = math.max(1, math.ceil(#s / CHUNK))
+	for i = 1, n do
+		SetString(P .. "r" .. id .. "_" .. i, string.sub(s, (i - 1) * CHUNK + 1, i * CHUNK))
+	end
+	SetInt(P .. "r" .. id .. "_n", n)
+	SetInt(P .. "ack", id)
+end
+
+local function clearResults(upTo)
+	for _, k in ipairs(ListKeys("savegame.mod") or {}) do
+		local id = string.match(k, "^mcp_r(%d+)_")
+		if id and (upTo == nil or tonumber(id) <= upTo) then ClearKey("savegame.mod." .. k) end
+	end
+end
+
+---------------------------------------------------------------------------
+-- Actions
+---------------------------------------------------------------------------
+
+local function vec(a) return Vec(a[1] or 0, a[2] or 0, a[3] or 0) end
+
+local function quat(a)
+	if not a then return Quat() end
+	if #a == 3 then return QuatEuler(a[1], a[2], a[3]) end
+	return Quat(a[1], a[2], a[3], a[4])
+end
+
+local function try(fn, ...)
+	local ok, a, b, c, d = pcall(fn, ...)
+	if ok then return a, b, c, d end
+	return nil
+end
+
+local function entityPos(h, t)
+	local tr
+	if t == "body" then tr = try(GetBodyTransform, h)
+	elseif t == "shape" then tr = try(GetShapeWorldTransform, h)
+	elseif t == "vehicle" then tr = try(GetVehicleTransform, h)
+	elseif t == "location" then tr = try(GetLocationTransform, h)
+	elseif t == "trigger" then tr = try(GetTriggerTransform, h)
+	elseif t == "light" then tr = try(GetLightTransform, h)
+	end
+	return tr
+end
+
+local function describe(h)
+	local d = { handle = h, valid = IsHandleValid(h) }
+	if not d.valid then return d end
+	local t = GetEntityType(h)
+	d.type = t
+	d.description = try(GetDescription, h)
+	local tags = {}
+	for _, k in ipairs(try(ListTags, h) or {}) do tags[k] = GetTagValue(h, k) end
+	if next(tags) then d.tags = tags end
+	d.transform = entityPos(h, t)
+	if t == "body" then
+		d.dynamic = try(IsBodyDynamic, h)
+		d.mass = try(GetBodyMass, h)
+		d.velocity = try(GetBodyVelocity, h)
+		d.shapes = try(GetBodyShapes, h)
+		d.broken = try(IsBodyBroken, h)
+	elseif t == "shape" then
+		d.body = try(GetShapeBody, h)
+		local x, y, z, scale = try(GetShapeSize, h)
+		d.size = { x, y, z }
+		d.voxel_scale = scale
+		d.voxel_count = try(GetShapeVoxelCount, h)
+	elseif t == "vehicle" then
+		d.body = try(GetVehicleBody, h)
+		d.health = try(GetVehicleHealth, h)
+	end
+	return d
+end
+
+local function regNode(key, depth, budget)
+	local node = { value = GetString(key) }
+	local kids = ListKeys(key) or {}
+	if #kids == 0 then return node end
+	if depth <= 0 then
+		node.child_keys = kids
+		return node
+	end
+	node.children = {}
+	for _, k in ipairs(kids) do
+		budget.n = budget.n - 1
+		if budget.n < 0 then
+			node.truncated = true
+			break
+		end
+		node.children[k] = regNode(key .. "." .. k, depth - 1, budget)
+	end
+	return node
+end
+
+local A = {}
+
+function A.ping(a, side)
+	return {
+		side = side,
+		version = GetVersion(),
+		level_path = GetString("game.levelpath"),
+		level_id = GetString("game.levelid"),
+		time = GetTime(),
+		multiplayer = try(IsMultiplayer),
+		scene = GetInt(P .. "scene"),
+	}
+end
+
+function A.run_lua(a)
+	local f, err = loadstring("return " .. a.code, "=mcp")
+	if not f then f, err = loadstring(a.code, "=mcp") end
+	if not f then error("syntax: " .. tostring(err), 0) end
+	local out = {}
+	local oldPrint = print
+	print = function(...)
+		local p = {}
+		for i = 1, select("#", ...) do p[i] = tostring((select(i, ...))) end
+		out[#out + 1] = table.concat(p, "\t")
+	end
+	local r = { pcall(f) }
+	print = oldPrint
+	local res = { output = (#out > 0) and table.concat(out, "\n") or nil }
+	if not r[1] then
+		res.error = tostring(r[2])
+		res.failed = true
+		return res
+	end
+	local n = 0
+	for k in pairs(r) do if k > n then n = k end end
+	res.returns = {}
+	for i = 2, n do res.returns[i - 1] = (r[i] == nil) and "<nil>" or r[i] end
+	return res
+end
+
+function A.call(a)
+	local f = _G
+	for part in string.gmatch(a.fn, "[^%.]+") do
+		if type(f) ~= "table" then f = nil break end
+		f = f[part]
+	end
+	if type(f) ~= "function" then error("no such function: " .. tostring(a.fn), 0) end
+	local args = a.args or {}
+	local r = { f(unpack(args, 1, a.argc or #args)) }
+	local n = 0
+	for k in pairs(r) do if k > n then n = k end end
+	for i = 1, n do if r[i] == nil then r[i] = "<nil>" end end
+	return r
+end
+
+function A.restart() Restart() end
+
+function A.start_level(a)
+	StartLevel(a.mission or "", a.path, a.layers or "")
+end
+
+function A.game_command(a)
+	local args = a.args or {}
+	Command(a.command, unpack(args))
+end
+
+function A.registry_get(a)
+	local node = regNode(a.key, a.depth or 1, { n = a.max_keys or 500 })
+	node.exists = HasKey(a.key)
+	return node
+end
+
+function A.registry_set(a)
+	local t, v, sync = a.type or "string", a.value, a.sync or false
+	if t == "int" then SetInt(a.key, tonumber(v), sync)
+	elseif t == "float" then SetFloat(a.key, tonumber(v), sync)
+	elseif t == "bool" then SetBool(a.key, v == true or v == "true" or v == 1, sync)
+	else SetString(a.key, tostring(v), sync) end
+	return GetString(a.key)
+end
+
+function A.registry_clear(a)
+	ClearKey(a.key)
+end
+
+function A.player_get(a)
+	local p = a.player or 0
+	return {
+		player = p,
+		name = try(GetPlayerName, p),
+		transform = GetPlayerTransform(p),
+		camera = try(GetPlayerCameraTransform, p),
+		velocity = try(GetPlayerVelocity, p),
+		health = try(GetPlayerHealth, p),
+		vehicle = try(GetPlayerVehicle, p),
+		tool = try(GetPlayerTool, p),
+		all_players = try(GetAllPlayers),
+	}
+end
+
+function A.player_set(a)
+	local p = a.player or 0
+	if a.pos or a.rot then
+		local t = GetPlayerTransform(p)
+		if a.pos then t.pos = vec(a.pos) end
+		if a.rot then t.rot = quat(a.rot) end
+		SetPlayerTransform(t, p)
+	end
+	if a.velocity then SetPlayerVelocity(vec(a.velocity), p) end
+	if a.health then SetPlayerHealth(a.health, p) end
+	return { transform = GetPlayerTransform(p), health = try(GetPlayerHealth, p) }
+end
+
+function A.spawn(a)
+	local t = Transform(vec(a.pos or {}), quat(a.rot))
+	local hs = Spawn(a.xml, t, a.allow_static or false, a.joint_existing or false) or {}
+	local res = {}
+	for i, h in ipairs(hs) do res[i] = { handle = h, type = try(GetEntityType, h) } end
+	return res
+end
+
+function A.delete(a)
+	local n = 0
+	for _, h in ipairs(a.handles or {}) do
+		if IsHandleValid(h) then
+			Delete(h)
+			n = n + 1
+		end
+	end
+	return { deleted = n }
+end
+
+function A.find(a)
+	local all = FindEntities(a.tag or "", true, a.type) or {}
+	local limit = a.limit or 100
+	local res = { count = #all, entities = {} }
+	for i = 1, math.min(#all, limit) do
+		local h = all[i]
+		local t = GetEntityType(h)
+		local tr = entityPos(h, t)
+		local desc = try(GetDescription, h)
+		res.entities[i] = { handle = h, type = t, pos = tr and tr.pos or nil, description = (desc ~= "") and desc or nil }
+	end
+	return res
+end
+
+function A.describe(a)
+	return describe(a.handle)
+end
+
+function A.raycast(a)
+	local origin, dir
+	if a.origin and a.dir then
+		origin, dir = vec(a.origin), VecNormalize(vec(a.dir))
+	else
+		local cam = GetPlayerCameraTransform(a.player or 0)
+		origin, dir = cam.pos, TransformToParentVec(cam, Vec(0, 0, -1))
+	end
+	local hit, dist, normal, shape = QueryRaycast(origin, dir, a.max_dist or 100, a.radius or 0)
+	local res = { hit = hit, origin = origin, dir = dir }
+	if hit then
+		res.dist = dist
+		res.point = VecAdd(origin, VecScale(dir, dist))
+		res.normal = normal
+		res.shape = shape
+		res.body = try(GetShapeBody, shape)
+	end
+	return res
+end
+
+function A.debug_print(a)
+	DebugPrint(tostring(a.text))
+end
+
+-- Actions that tear the scene down: acknowledged before they run.
+local RELOADS = { restart = true, start_level = true }
+
+---------------------------------------------------------------------------
+-- Pump
+---------------------------------------------------------------------------
+
+local lastDone = -1
+
+local function pump(side)
+	local f = loadfile(INBOX)
+	if not f then return end
+	local ok, box = pcall(f)
+	if not ok or type(box) ~= "table" or type(box.session) ~= "string" then return end
+
+	if box.session ~= GetString(P .. "session") then
+		clearResults(nil)
+		SetInt(P .. "ack", 0)
+		SetInt(P .. "halt", 0)
+		SetInt(P .. "waiting", 0)
+		SetString(P .. "session", box.session)
+	end
+	if GetInt(P .. "halt") == 1 then return end
+
+	local done = box.done or 0
+	if done ~= lastDone then
+		lastDone = done
+		clearResults(done)
+	end
+
+	local ack = GetInt(P .. "ack")
+	for _, cmd in ipairs(box.cmds or {}) do
+		if cmd.id > ack then
+			if (cmd.side or "server") ~= side then return end
+			local h = A[cmd.action]
+			local args = cmd.args or {}
+			if not h then
+				writeResult(cmd.id, { ok = false, error = "unknown action: " .. tostring(cmd.action) })
+			elseif RELOADS[cmd.action] or cmd.wait_scene then
+				SetInt(P .. "halt", 1)
+				if cmd.wait_scene then SetInt(P .. "waiting", 1) end
+				writeResult(cmd.id, { ok = true, result = "scene load requested" })
+				local good, err = pcall(h, args, side)
+				if not good then
+					SetInt(P .. "halt", 0)
+					SetInt(P .. "waiting", 0)
+					writeResult(cmd.id, { ok = false, error = tostring(err) })
+				end
+				return
+			else
+				local r = { pcall(h, args, side) }
+				if r[1] then
+					writeResult(cmd.id, { ok = true, result = r[2] })
+				else
+					writeResult(cmd.id, { ok = false, error = tostring(r[2]) })
+				end
+			end
+			ack = cmd.id
+		end
+	end
+end
+
+---------------------------------------------------------------------------
+-- Callbacks
+---------------------------------------------------------------------------
+
+local sTicks, sTimer, cTimer = 0, 0, 0
+
+function server.tick(dt)
+	sTicks = sTicks + 1
+	if sTicks < 3 then return end
+	if sTicks == 3 then
+		-- The scene is loaded and running: tell the server.
+		SetString(P .. "level", GetString("game.levelpath"))
+		SetInt(P .. "scene", GetInt(P .. "scene") + 1)
+		SetInt(P .. "halt", 0)
+		SetInt(P .. "waiting", 0)
+	end
+	sTimer = sTimer + dt
+	if sTimer < POLL then return end
+	sTimer = 0
+	pump("server")
+end
+
+function client.tick(dt)
+	cTimer = cTimer + dt
+	if cTimer < POLL then return end
+	cTimer = 0
+	-- Only the host's game talks to the MCP server.
+	if not IsPlayerHost(GetLocalPlayer()) then return end
+	pump("client")
+end

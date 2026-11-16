@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "teardown": {
+      "command": "C:\\Projects\\Teardown-MCP\\server\\target\\release\\teardown-mcp.exe",
+      "args": []
+    }
+  }
+}
