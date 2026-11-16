@@ -106,6 +106,12 @@ fn is_black(bgra: &[u8]) -> bool {
     bgra.chunks_exact(4).step_by(97).all(|p| p[0] < 8 && p[1] < 8 && p[2] < 8)
 }
 
+/// Is there a top-level window with exactly this title?
+pub fn window_exists(title: &str) -> bool {
+    let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { !FindWindowW(std::ptr::null(), wide.as_ptr()).is_null() }
+}
+
 pub struct Shot {
     pub jpeg: Vec<u8>,
     pub width: u32,
@@ -113,14 +119,27 @@ pub struct Shot {
     pub method: &'static str,
 }
 
-pub fn capture(max_width: u32) -> Result<Shot, String> {
+/// Window titles tried when none is given: the multiplayer test's host window, then the game.
+const DEFAULT_TITLES: [&str; 2] = ["TD - Host", "Teardown"];
+
+pub fn capture(max_width: u32, window: Option<&str>) -> Result<Shot, String> {
     unsafe {
         // Real pixels, not DPI-scaled ones (-4 = per-monitor aware v2).
         SetProcessDpiAwarenessContext(-4);
-        let title: Vec<u16> = "Teardown\0".encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        let titles: Vec<&str> = match window {
+            Some(t) => vec![t],
+            None => DEFAULT_TITLES.to_vec(),
+        };
+        let mut hwnd: HANDLE = std::ptr::null_mut();
+        for t in &titles {
+            let wide: Vec<u16> = t.encode_utf16().chain(std::iter::once(0)).collect();
+            hwnd = FindWindowW(std::ptr::null(), wide.as_ptr());
+            if !hwnd.is_null() {
+                break;
+            }
+        }
         if hwnd.is_null() {
-            return Err("no window titled \"Teardown\" found; is the game running?".into());
+            return Err(format!("no window titled {titles:?} found; is the game running?"));
         }
         if IsIconic(hwnd) != 0 {
             return Err("the Teardown window is minimized".into());

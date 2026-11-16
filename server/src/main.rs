@@ -1,6 +1,7 @@
 //! Teardown MCP server (stdio). Drives a running Teardown through the "MCP Bridge" mod.
 
 mod bridge;
+mod mptest;
 #[cfg(windows)]
 mod shot;
 
@@ -24,6 +25,16 @@ fn send(msg: &Value) {
     let _ = out.flush();
 }
 
+#[cfg(windows)]
+fn host_test_window() -> bool {
+    shot::window_exists("TD - Host")
+}
+
+#[cfg(not(windows))]
+fn host_test_window() -> bool {
+    false
+}
+
 fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
@@ -40,7 +51,7 @@ fn tools() -> Value {
     let side = json!({"type": "string", "enum": ["server", "client"], "description": "Which half of the bridge script runs it (default server)."});
     let vec3 = |d: &str| json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": d});
     let rot = json!({"type": "array", "items": {"type": "number"}, "description": "Rotation: quaternion [x,y,z,w] or Euler degrees [x,y,z]."});
-    let timeout = json!({"type": "number", "description": "Seconds to wait for the new scene (default 600)."});
+    let timeout = json!({"type": "number", "description": "Seconds to wait for the new scene (default 1800; heavy mods can take minutes)."});
     let player = json!({"type": "integer", "description": "Player id (default 0: the host on the server, the local player on the client)."});
     json!([
         tool("ping", "Check that the game answers. Returns game version, level path, and scene counter.", json!({"side": side}), &[]),
@@ -80,8 +91,16 @@ fn tools() -> Value {
         tool("raycast", "Cast a ray. Without origin and dir it goes from the player's camera forward.",
             json!({"origin": vec3("Ray start."), "dir": vec3("Ray direction."), "max_dist": {"type": "number"}, "radius": {"type": "number"}, "player": player, "side": side}), &[]),
         tool("debug_print", "Print a line in the game's on-screen debug console.", json!({"text": {"type": "string"}, "side": side}), &["text"]),
-        tool("screenshot", "Capture the Teardown window (shows the scene and red script-error text).",
-            json!({"max_width": {"type": "integer", "description": "Downscale to this width (default 1280)."}}), &[]),
+        tool("mp_test_start", "Start Teardown's local multiplayer test: two game windows on this PC (\"TD - Host\" and \"TD - Client1\") running the given mod's level, with the MCP Bridge mod loaded, then wait until the host answers. Use this to test a mod in multiplayer; commands then go to the host window.",
+            json!({"mod": {"type": "string", "description": "Mod to start: its id (\"local-my-mod\", \"steam-<workshop id>\", \"builtin-<name>\") or its folder name under Documents/Teardown/mods (\"My Mod\")."},
+                   "level": {"type": "string", "description": "Level XML, relative to the mod folder or a full path (default main.xml)."},
+                   "extra_mods": {"type": "array", "items": {"type": "string"}, "description": "Ids of further global mods to load besides the bridge (untested)."},
+                   "restart": {"type": "boolean", "description": "Close a multiplayer test that is already running and start a new one (default false)."},
+                   "timeout_secs": {"type": "number", "description": "Seconds to wait for the level to load (default 1800)."}}), &["mod"]),
+        tool("mp_test_stop", "Close the local multiplayer test windows.", json!({}), &[]),
+        tool("screenshot", "Capture a Teardown window (shows the scene and red script-error text). By default the multiplayer test's host window (\"TD - Host\") if there is one, else the normal game window (\"Teardown\").",
+            json!({"max_width": {"type": "integer", "description": "Downscale to this width (default 1280)."},
+                   "window": {"type": "string", "description": "Exact window title, e.g. \"TD - Host\", \"TD - Client1\", \"Teardown\"."}}), &[]),
         tool("read_log", "Read the end of Teardown's log file (level loads, missing files/prefabs/sounds, disabled scripts). The game writes it in bursts, so the newest lines can lag behind. Lua runtime errors are not in it: use screenshot for those. Older sessions are in log_0.txt etc.",
             json!({"lines": {"type": "integer", "description": "Lines from the end (default 80)."}, "contains": {"type": "string", "description": "Only lines containing this text (case-insensitive)."},
                    "level": {"type": "string", "enum": ["all", "warning", "error"]}, "file": {"type": "string", "description": "Log file name (default log.txt)."}}), &[]),
@@ -154,12 +173,13 @@ fn unwrap_result(action: &str, r: &Value) -> Result<Value, String> {
 struct Server {
     bridge: Bridge,
     log_dir: PathBuf,
+    game_dir: PathBuf,
     response: Duration,
 }
 
 impl Server {
     fn timeouts(&self, a: &Value) -> Timeouts {
-        let secs = a["timeout_secs"].as_f64().unwrap_or(600.0).clamp(5.0, 7200.0);
+        let secs = a["timeout_secs"].as_f64().unwrap_or(1800.0).clamp(5.0, 7200.0);
         Timeouts { response: self.response, scene: Duration::from_secs_f64(secs) }
     }
 
@@ -255,6 +275,58 @@ impl Server {
                     "note": "Keys are from the last time the game saved; use ping to check the game answers now."
                 }))))
             }
+            "mp_test_start" => {
+                let m = a["mod"].as_str().ok_or("mod is required")?;
+                let local_mods = self.bridge.mod_dir.parent().map(PathBuf::from).unwrap_or_default();
+                let (mod_id, level) = mptest::resolve(m, a["level"].as_str(), &self.game_dir, &local_mods, &self.log_dir)?;
+                self.bridge.install()?;
+                if mptest::running() {
+                    if a["restart"].as_bool().unwrap_or(false) {
+                        mptest::stop();
+                    } else {
+                        return Err("a multiplayer test is already running; pass restart=true to close it and start a new one".into());
+                    }
+                }
+                let bridge_folder = self.bridge.mod_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let mut global_mods = vec![format!("local-{}", mptest::slug(&bridge_folder))];
+                for x in a["extra_mods"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    global_mods.push(x.to_string());
+                }
+                let launch = mptest::Launch { mod_id, level, global_mods };
+                mptest::start(&launch, &self.game_dir, &self.log_dir)?;
+
+                // The level is up when the bridge in the host window answers.
+                let total = self.timeouts(a).scene;
+                let started = std::time::Instant::now();
+                let quick = Timeouts { response: Duration::from_secs(8), scene: total };
+                loop {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if !mptest::running() {
+                        return Err(format!(
+                            "the test windows closed after {} s without the level coming up (mod {}, level {}). read_log with file=log_0.txt shows the host's log.",
+                            started.elapsed().as_secs(), launch.mod_id, launch.level
+                        ));
+                    }
+                    match self.bridge.send(vec![make_cmd("ping", &json!({}), false)], &quick, progress) {
+                        Ok(out) => {
+                            let info = unwrap_result("ping", &out.results[0]).unwrap_or(Value::Null);
+                            return Ok(text(format!(
+                                "Multiplayer test is running after {:.0} s: mod {}, level {}, global mods {:?}.\n{}",
+                                started.elapsed().as_secs_f64(), launch.mod_id, launch.level, launch.global_mods, pretty(&info)
+                            )));
+                        }
+                        Err(e) if started.elapsed() > total => {
+                            return Err(format!("the test windows started but the bridge did not answer within {} s: {e}", total.as_secs()));
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            "mp_test_stop" => Ok(text(if mptest::stop() {
+                "Multiplayer test windows closed.".into()
+            } else {
+                "No multiplayer test was running.".into()
+            })),
             "screenshot" => self.screenshot(a),
             "read_log" => self.read_log(a),
             _ => Err(format!("unknown tool: {name}")),
@@ -265,7 +337,7 @@ impl Server {
     fn screenshot(&self, a: &Value) -> Result<Vec<Value>, String> {
         use base64::Engine;
         let max = a["max_width"].as_u64().unwrap_or(1280).clamp(160, 4096) as u32;
-        let s = shot::capture(max)?;
+        let s = shot::capture(max, a["window"].as_str())?;
         Ok(vec![
             json!({"type": "image", "mimeType": "image/jpeg",
                    "data": base64::engine::general_purpose::STANDARD.encode(&s.jpeg)}),
@@ -321,7 +393,21 @@ fn main() {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(20.0);
 
-    let mut server = Server { bridge: Bridge::new(mod_dir, savegame), log_dir, response: Duration::from_secs_f64(response) };
+    let game_dir = env_path("TEARDOWN_DIR")
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\Teardown"));
+    let mut server = Server {
+        bridge: Bridge::new(mod_dir, savegame),
+        log_dir,
+        game_dir,
+        response: Duration::from_secs_f64(response),
+    };
+    // Where results come back: "save" (savegame.xml), "log" (the game's log file), or by
+    // default the log whenever the multiplayer test's host window is open.
+    server.bridge.detect_log = match std::env::var("TEARDOWN_MCP_REPLY").as_deref() {
+        Ok("log") => || true,
+        Ok("save") => || false,
+        _ => host_test_window,
+    };
     if let Err(e) = server.bridge.install() {
         eprintln!("teardown-mcp: {e}");
     }

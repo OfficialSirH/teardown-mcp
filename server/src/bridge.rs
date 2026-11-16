@@ -40,6 +40,14 @@ pub struct Bridge {
     done: u64,
     pending: Vec<(u64, Cmd)>,
     key_re: Regex,
+    /// Decides per call whether results come back through the game's log file instead of
+    /// the savegame (the multiplayer test windows never write savegame.xml).
+    pub detect_log: fn() -> bool,
+    pub log_dir: PathBuf,
+    log_mode: bool,
+    log_re: Regex,
+    log_offsets: HashMap<PathBuf, u64>,
+    log_state: State,
 }
 
 pub type State = HashMap<String, String>;
@@ -126,7 +134,16 @@ fn int(st: &State, key: &str) -> u64 {
 
 impl Bridge {
     pub fn new(mod_dir: PathBuf, savegame: PathBuf) -> Bridge {
+        let log_dir = savegame.parent().map(PathBuf::from).unwrap_or_default();
         Bridge {
+            detect_log: || false,
+            log_dir,
+            log_mode: false,
+            // mcpr_<session>_<id>_<chunk>_<chunks>_<hex json>   result chunk
+            // mcps_<session>_<ack>_<hex level path>_<n>         a scene started running
+            log_re: Regex::new(r"mcp([rs])_([0-9a-f]+-[0-9a-f]+)_(\d+)_(?:(\d+)_(\d+)_)?([0-9a-f]*)(?:_\d+)?\.ogg").unwrap(),
+            log_offsets: HashMap::new(),
+            log_state: State::new(),
             mod_dir,
             savegame,
             session: new_session(),
@@ -137,7 +154,8 @@ impl Bridge {
         }
     }
 
-    /// Write the mod's path config and an empty inbox. Fails if the mod folder is missing.
+    /// Write the mod's path config. Fails if the mod folder is missing. The inbox is only
+    /// written when a command is sent, so an idle server never disturbs another one.
     pub fn install(&self) -> Result<(), String> {
         if !self.mod_dir.join("main.lua").exists() {
             return Err(format!(
@@ -145,26 +163,32 @@ impl Bridge {
                 self.mod_dir.display()
             ));
         }
-        let mut dir = self.mod_dir.to_string_lossy().replace('\\', "/");
-        if !dir.ends_with('/') {
-            dir.push('/');
-        }
+        // The inbox lives outside the mod folder: a multiplayer session compares the mods of
+        // host and client, and a file changing in the folder gets the client kicked.
         let mut cfg = String::from(
-            "-- Written by the MCP server at startup: absolute path of this mod folder.\nMCP_DIR = ",
+            "-- Written by the MCP server: the file the mod reads its commands from.\nMCP_INBOX = ",
         );
-        lua_str(&dir, &mut cfg);
+        lua_str(&self.inbox_path().to_string_lossy().replace('\\', "/"), &mut cfg);
         cfg.push('\n');
+        for stale in ["mcp_inbox.lua", "mcp_inbox.tmp"] {
+            let _ = std::fs::remove_file(self.mod_dir.join(stale));
+        }
         let path = self.mod_dir.join("mcp_config.lua");
         if std::fs::read_to_string(&path).ok().as_deref() != Some(cfg.as_str()) {
             std::fs::write(&path, cfg).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         }
-        self.write_inbox()
+        Ok(())
+    }
+
+    /// The command file, next to the savegame.
+    pub fn inbox_path(&self) -> PathBuf {
+        self.log_dir.join("mcp_inbox.lua")
     }
 
     fn write_inbox(&self) -> Result<(), String> {
         let mut s = String::from("return {session=");
         lua_str(&self.session, &mut s);
-        let _ = write!(s, ",done={},cmds={{\n", self.done);
+        let _ = write!(s, ",log={},done={},cmds={{\n", self.log_mode, self.done);
         for (id, c) in &self.pending {
             let _ = write!(s, "{{id={},action=", id);
             lua_str(&c.action, &mut s);
@@ -181,8 +205,8 @@ impl Bridge {
         s.push_str("}}\n");
 
         // Write beside, then rename over: the mod never sees a half-written file.
-        let tmp = self.mod_dir.join("mcp_inbox.tmp");
-        let dst = self.mod_dir.join("mcp_inbox.lua");
+        let dst = self.inbox_path();
+        let tmp = dst.with_extension("tmp");
         let mut last = String::new();
         for _ in 0..40 {
             match std::fs::write(&tmp, &s).and_then(|_| std::fs::rename(&tmp, &dst)) {
@@ -204,6 +228,68 @@ impl Bridge {
             st.insert(c[1].to_string(), v);
         }
         Some(st)
+    }
+
+    /// Read what the game's log files gained since the last call and fold this session's
+    /// bridge lines into `log_state`, shaped like the savegame keys.
+    fn tail_logs(&mut self) {
+        let Ok(dir) = std::fs::read_dir(&self.log_dir) else { return };
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if !name.starts_with("log") || !name.ends_with(".txt") {
+                continue;
+            }
+            let path = entry.path();
+            use std::io::{Read, Seek, SeekFrom};
+            // Ask the open file for its size: the directory listing lags behind for a file
+            // the game is still writing.
+            let Ok(mut f) = std::fs::File::open(&path) else { continue };
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let mut off = self.log_offsets.get(&path).copied().unwrap_or(0);
+            if len < off {
+                off = 0; // the game started a new log
+            }
+            let mut buf = Vec::new();
+            if f.seek(SeekFrom::Start(off)).and_then(|_| f.read_to_end(&mut buf)).is_err() || buf.is_empty() {
+                continue;
+            }
+            // Only whole lines; the rest is picked up next time.
+            let Some(end) = buf.iter().rposition(|&b| b == b'\n') else { continue };
+            let text = String::from_utf8_lossy(&buf[..=end]).into_owned();
+            self.log_offsets.insert(path, off + end as u64 + 1);
+            for c in self.log_re.captures_iter(&text) {
+                if c[2] != self.session {
+                    continue;
+                }
+                self.log_state.insert("session".into(), self.session.clone());
+                let num: u64 = c[3].parse().unwrap_or(0);
+                // hex -> %XX, the form result_of() decodes
+                let hex = &c[6];
+                let mut enc = String::with_capacity(hex.len() / 2 * 3);
+                for pair in hex.as_bytes().chunks_exact(2) {
+                    enc.push('%');
+                    enc.push(pair[0] as char);
+                    enc.push(pair[1] as char);
+                }
+                if &c[1] == "r" {
+                    let (Some(i), Some(n)) = (c.get(4), c.get(5)) else { continue };
+                    self.log_state.insert(format!("r{num}_{}", i.as_str()), enc);
+                    self.log_state.insert(format!("r{num}_n"), n.as_str().to_string());
+                } else if num >= int(&self.log_state, "scene_ack") {
+                    self.log_state.insert("scene_ack".into(), num.to_string());
+                    self.log_state.insert("scene_seen".into(), "1".into());
+                    self.log_state.insert("level".into(), pct_decode(&enc));
+                }
+            }
+        }
+        // Commands run in order: the newest complete result is the acknowledged one.
+        let mut ack = int(&self.log_state, "ack");
+        for (id, _) in &self.pending {
+            if *id > ack && Self::result_of(&self.log_state, *id).is_some() {
+                ack = *id;
+            }
+        }
+        self.log_state.insert("ack".into(), ack.to_string());
     }
 
     fn result_of(st: &State, id: u64) -> Option<Value> {
@@ -229,6 +315,7 @@ impl Bridge {
             return Err("no commands".into());
         }
         self.install()?;
+        self.log_mode = (self.detect_log)();
         let scene0 = self.read_state().map(|s| int(&s, "scene")).unwrap_or(0);
 
         let mut ids = Vec::new();
@@ -256,7 +343,12 @@ impl Bridge {
         let failure = loop {
             std::thread::sleep(Duration::from_millis(60));
             let now = Instant::now();
-            let st = self.read_state().unwrap_or_default();
+            let st = if self.log_mode {
+                self.tail_logs();
+                self.log_state.clone()
+            } else {
+                self.read_state().unwrap_or_default()
+            };
             let ours = st.get("session").map(|s| s == &self.session).unwrap_or(false);
             let mut loading = false;
             if ours {
@@ -267,7 +359,15 @@ impl Bridge {
                 }
                 halted = int(&st, "halt") == 1;
                 let k = waits.iter().filter(|&&id| id <= ack).count() as u64;
-                loading = k > 0 && (int(&st, "scene") < scene0 + k || int(&st, "waiting") == 1);
+                loading = if self.log_mode {
+                    // The new scene's first line names the last command it knows of.
+                    match waits.iter().filter(|&&id| id <= ack).max() {
+                        Some(&w) => !(st.contains_key("scene_seen") && int(&st, "scene_ack") >= w),
+                        None => false,
+                    }
+                } else {
+                    k > 0 && (int(&st, "scene") < scene0 + k || int(&st, "waiting") == 1)
+                };
                 match (loading, loading_since) {
                     (true, None) => loading_since = Some(now),
                     (false, Some(since)) => {
@@ -302,8 +402,13 @@ impl Bridge {
                     )
                 } else if !ours {
                     format!(
-                        "no answer from the game within {} s. Teardown must be running inside a level (not the main menu) with the \"MCP Bridge\" mod enabled. The bridge cannot run while the game is paused or in a menu, and cannot unpause it: ask the user to resume. screenshot shows what the game is doing.",
-                        limit.as_secs()
+                        "no answer from the game within {} s. Teardown must be running inside a level (not the main menu) with the \"MCP Bridge\" mod enabled ({}). The bridge cannot run while the game is paused or in a menu, and cannot unpause it: ask the user to resume. screenshot shows what the game is doing.",
+                        limit.as_secs(),
+                        if self.log_mode {
+                            "multiplayer test window found: expecting replies in its log file"
+                        } else {
+                            "expecting replies in savegame.xml"
+                        }
                     )
                 } else {
                     format!(
@@ -330,8 +435,9 @@ impl Bridge {
         // holding for a scene that never came, a new session releases it.
         self.pending.clear();
         self.done = last_id;
-        if halted {
+        if halted || loading_since.is_some() {
             self.session = new_session();
+            self.log_state.clear();
         }
         let _ = self.write_inbox();
         Err(failure)

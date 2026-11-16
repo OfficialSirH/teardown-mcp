@@ -3,7 +3,7 @@
 
 -- MCP Bridge
 --
--- Commands in : MCP_DIR/mcp_inbox.lua, written by the MCP server, polled here with loadfile
+-- Commands in : the file named by MCP_INBOX (mcp_config.lua), kept next to the savegame, polled with loadfile
 --               (the game never re-reads savegame.xml, so commands cannot come through it).
 -- Results out : savegame.mod.mcp_* registry keys, which the game writes to savegame.xml within
 --               about half a second; the server reads them from that file.
@@ -17,9 +17,10 @@
 --   mcp_halt      1 while a scene load is pending (no command runs in the dying scene)
 --   mcp_scene     counts scenes started; the server waits for it to grow
 --   mcp_level     level path of the running scene
+--   mcp_log       1 if the server also wants results in the game's log file
 
 local P = "savegame.mod.mcp_"
-local INBOX = MCP_DIR .. "mcp_inbox.lua"
+local INBOX = MCP_INBOX
 local CHUNK = 4000
 local MAXLEN = 240000
 local POLL = 0.1
@@ -75,10 +76,34 @@ local function pct(s)
 	end))
 end
 
-local function writeResult(id, tbl)
-	local s = pct(enc(tbl, 0, {}))
+-- Second way out, for the multiplayer test windows (they never write savegame.xml):
+-- a failed LoadSound puts its path in the game's log file, so the path carries the data.
+-- The log is written in 4 KB blocks; padding lines push the real ones out.
+local padCount = 0
+
+local function logLine(name)
+	pcall(LoadSound, "MOD/" .. name .. ".ogg")
+end
+
+local function logFlush(side)
+	local pad = string.rep("p", 200)
+	local tag = "mcpp_" .. string.sub(side, 1, 1) .. GetInt(P .. "scene") .. "_"
+	for _ = 1, 16 do
+		padCount = padCount + 1
+		logLine(tag .. padCount .. "_" .. pad)
+	end
+end
+
+local function hex(s)
+	return (string.gsub(s, ".", function(c) return string.format("%02x", string.byte(c)) end))
+end
+
+local function writeResult(id, tbl, side)
+	local json = enc(tbl, 0, {})
+	local s = pct(json)
 	if #s > MAXLEN then
-		s = pct(enc({ ok = false, error = "result too large (" .. #s .. " chars), narrow the query" }, 0, {}))
+		json = enc({ ok = false, error = "result too large (" .. #s .. " chars), narrow the query" }, 0, {})
+		s = pct(json)
 	end
 	local n = math.max(1, math.ceil(#s / CHUNK))
 	for i = 1, n do
@@ -86,6 +111,16 @@ local function writeResult(id, tbl)
 	end
 	SetInt(P .. "r" .. id .. "_n", n)
 	SetInt(P .. "ack", id)
+
+	if GetInt(P .. "log") == 1 then
+		local h = hex(json)
+		local m = math.max(1, math.ceil(#h / 400))
+		local head = "mcpr_" .. GetString(P .. "session") .. "_" .. id .. "_"
+		for i = 1, m do
+			logLine(head .. i .. "_" .. m .. "_" .. string.sub(h, (i - 1) * 400 + 1, i * 400))
+		end
+		logFlush(side)
+	end
 end
 
 local function clearResults(upTo)
@@ -358,6 +393,7 @@ local RELOADS = { restart = true, start_level = true }
 local lastDone = -1
 
 local function pump(side)
+	if not INBOX then return end -- no path in mcp_config.lua
 	local f = loadfile(INBOX)
 	if not f then return end
 	local ok, box = pcall(f)
@@ -370,6 +406,7 @@ local function pump(side)
 		SetInt(P .. "waiting", 0)
 		SetString(P .. "session", box.session)
 	end
+	SetInt(P .. "log", box.log and 1 or 0)
 	if GetInt(P .. "halt") == 1 then return end
 
 	local done = box.done or 0
@@ -385,24 +422,24 @@ local function pump(side)
 			local h = A[cmd.action]
 			local args = cmd.args or {}
 			if not h then
-				writeResult(cmd.id, { ok = false, error = "unknown action: " .. tostring(cmd.action) })
+				writeResult(cmd.id, { ok = false, error = "unknown action: " .. tostring(cmd.action) }, side)
 			elseif RELOADS[cmd.action] or cmd.wait_scene then
 				SetInt(P .. "halt", 1)
 				if cmd.wait_scene then SetInt(P .. "waiting", 1) end
-				writeResult(cmd.id, { ok = true, result = "scene load requested" })
+				writeResult(cmd.id, { ok = true, result = "scene load requested" }, side)
 				local good, err = pcall(h, args, side)
 				if not good then
 					SetInt(P .. "halt", 0)
 					SetInt(P .. "waiting", 0)
-					writeResult(cmd.id, { ok = false, error = tostring(err) })
+					writeResult(cmd.id, { ok = false, error = tostring(err) }, side)
 				end
 				return
 			else
 				local r = { pcall(h, args, side) }
 				if r[1] then
-					writeResult(cmd.id, { ok = true, result = r[2] })
+					writeResult(cmd.id, { ok = true, result = r[2] }, side)
 				else
-					writeResult(cmd.id, { ok = false, error = tostring(r[2]) })
+					writeResult(cmd.id, { ok = false, error = tostring(r[2]) }, side)
 				end
 			end
 			ack = cmd.id
@@ -425,6 +462,11 @@ function server.tick(dt)
 		SetInt(P .. "scene", GetInt(P .. "scene") + 1)
 		SetInt(P .. "halt", 0)
 		SetInt(P .. "waiting", 0)
+		if GetInt(P .. "log") == 1 then
+			logLine("mcps_" .. GetString(P .. "session") .. "_" .. GetInt(P .. "ack") .. "_"
+				.. hex(GetString("game.levelpath")) .. "_" .. GetInt(P .. "scene"))
+			logFlush("server")
+		end
 	end
 	sTimer = sTimer + dt
 	if sTimer < POLL then return end
