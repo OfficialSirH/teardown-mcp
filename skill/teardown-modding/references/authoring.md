@@ -1,0 +1,399 @@
+# Authoring patterns that were built and run
+
+Everything here was written, loaded and watched working through the bridge (Teardown 2.2.0,
+2026-11-17, local multiplayer test). The full sources are the playground mod in the
+teardown-mcp repo (`playground/`: `main.xml`, `prefab/buggy.xml`, `prefab/blaster.xml`,
+`script/buggy.lua`, `script/range.lua`, `script/director.lua`, `script/gate.lua`,
+`script/blaster.lua`, `script/menu.lua`). Copy from here before inventing.
+
+## Contents
+
+1. A level that loads
+2. Shapes from XML
+3. A vehicle from scratch
+4. Server logic, client presentation
+5. HUD and world-space UI
+6. Camera
+7. Weather and look
+8. Shooting and destruction
+9. Joints and triggers
+10. A custom hand tool
+11. A clickable menu
+12. Development loop that worked
+
+## 1. A level that loads
+
+A mod folder with `info.txt` (`name`, `author`, `description`, `tags = Map`, `version = 2`) and
+`main.xml`:
+
+```xml
+<scene version="3" shadowVolume="200 100 200">
+	<environment template="sunny" skyboxrot="-45"/>
+	<voxbox pos="-100.0 -0.1 -100.0" size="2000 1 2000"/>
+	<spawnpoint pos="0.0 0.0 0.0" rot="0.0 180.0 0.0"/>
+	<boundary>
+		<vertex pos="-100.0 -100.0"/> <vertex pos="100.0 -100.0"/>
+		<vertex pos="100.0 100.0"/> <vertex pos="-100.0 100.0"/>
+	</boundary>
+	<script file="main.lua"/>
+	<script file="sandbox.lua"/>
+	<script file="MOD/script/mine.lua"/>
+</scene>
+```
+
+- `main.lua` and `sandbox.lua` without `MOD/` are the game's own scripts (`data/script/`):
+  they give players tools, respawn and the sandbox rules. Keep them unless the mod replaces
+  them.
+- Environment templates: `sunny`, `night`, `sunset`, `sunrise`, `foggy`, `rain`.
+- A brand-new local mod folder starts in the multiplayer test straight away; the main game
+  does not need to have listed it.
+- This level reloads in about 2 seconds, which makes it a good place to develop a script
+  before moving it into a heavy mod.
+- A 0.1 m thick ground lets debris sink through (a broken piece ended at y = -1). Use a
+  thicker floor where things get destroyed.
+
+## 2. Shapes from XML
+
+- `<voxbox pos="x y z" size="w h l" color="r g b" material="wood"/>`: `size` is in voxels
+  (0.1 m), `pos` is the box's corner in metres, relative to the parent. `material="wood"` gave
+  a shape that `GetShapeMaterialAtPosition` reports as `wood` and that breaks when shot.
+  Without a material a voxbox is indestructible.
+- Wrap shapes in `<body dynamic="true">` for a physical prop, plain `<body>` for a static one.
+  `tags="a b=1"` on any element.
+- `Spawn(xml, transform)` takes this XML as a string, or a prefab file (`MOD/prefab/x.xml`,
+  root `<prefab version="2.0.0"><group>...`). It returns every handle it made, the body first
+  for a single-body string; pick by `GetEntityType(h)`.
+
+## 3. A vehicle from scratch
+
+```xml
+<vehicle name="buggy" tags="mybuggy" sound="classic1" spring="0.5" damping="0.7"
+         topspeed="60" acceleration="4" strength="4" steerassist="0.1">
+	<body pos="0.0 0.6 0.0" dynamic="true">
+		<voxbox pos="-0.8 0.0 -1.5" size="16 5 30" color="0.8 0.2 0.1"/>
+		<location name="player" tags="player" pos="0.0 0.9 0.0"/>
+		<location tags="exit" pos="-1.6 0.3 0.0"/>
+		<wheel name="fl" pos="-0.95 -0.25 -1.1" steer="1" travel="-0.2 0.1">
+			<voxbox pos="-0.1 -0.35 -0.35" size="2 7 7" color="0.1 0.1 0.1"/>
+		</wheel>
+		<!-- fr the same with x mirrored; bl / br with drive="1" instead of steer="1" -->
+	</body>
+	<rig name="driver" tags="driver sort=0">
+		<location name="seat" tags="seat" pos="0.0 0.9 0.3"/>
+	</rig>
+</vehicle>
+```
+
+- **Wheels go inside `<body>`.** As siblings of the body they are inert boxes: the vehicle
+  rests on its belly and `DriveVehicle` does nothing. No error is logged.
+- Forward is -Z: front wheels at negative z, `steer="1"` on the front, `drive="1"` on the rear.
+- `DriveVehicle(vehicle, drive, steering, handbrake)` from server code moves it with nobody
+  inside (drive 0.6, steering 0.5 gave a 30 km/h circle). Call it every tick.
+- `SetPlayerVehicle(vehicle, playerId)` (server) seats a player; `GetPlayerVehicle(p)` then
+  returns the handle.
+- Speed: `VecLength(GetBodyVelocity(GetVehicleBody(v))) * 3.6` km/h; readable on clients.
+- Driven by hand (player seated, `w` held 2.5 s through `send_input`) it reached 55 km/h;
+  `e` got the player out.
+
+## 4. Server logic, client presentation
+
+The shape that worked for all three mini-mods:
+
+```lua
+#version 2
+
+function server.init()
+	-- create things, publish what clients need
+	shared.thing = { vehicle = handle, score = 0 }
+	SetInt("level.thing.score", 0, true)        -- mirror for tools and other scripts
+end
+
+function server.tick(dt)
+	if GetBool("level.thing.go") then ... end   -- a switch you can flip from outside
+	ClientCall(0, "client.thingFx", x, y, z)    -- 0 = every client, the host included
+end
+
+function client.init()  sound = LoadSound("tools/gun0.ogg")  end
+function client.thingFx(x, y, z)  PlaySound(sound, Vec(x, y, z), 0.6)  end
+function client.draw()  local t = shared.thing  if not t then return end  ...  end
+```
+
+- `shared` belongs to **one script**. Another script, the bridge included, sees its own empty
+  `shared`. Anything that must be visible outside the script goes into the registry.
+- Nested writes work and arrive: `shared.t.n = shared.t.n + 1`, `shared.t.list[i] = {...}`.
+- Registry switches (`level.<mod>.<flag>`) make a script drivable from the bridge:
+  `registry_set` flips them. Set them with `sync: true` if client code reads them, or the
+  joined client never sees the change.
+- Per-shot effects: send plain numbers through `ClientCall` and build the `Vec` on the client.
+  Load sounds in `client.init` (client-side loads are not replicated).
+
+## 5. HUD and world-space UI
+
+- The canvas is 1920 wide whatever the window: the multiplayer test's half-screen window is
+  1920 x 2280. A 28 px font is tiny there; 40 to 64 reads well.
+- Label over an entity:
+
+```lua
+local x, y, dist = UiWorldToPixel(worldPos)
+if dist > 0 then            -- in front of the camera
+	UiPush()  UiTranslate(x, y)  UiAlign("center middle")
+	UiFont("bold.ttf", 28)  UiTextOutline(0, 0, 0, 1, 0.2)  UiText("...")
+	UiPop()
+end
+```
+
+- Bar: a dark `UiRect(w, h)`, then `UiAlign("left middle")`, translate by half the width to
+  the left, and a coloured `UiRect(w * fraction, h)`.
+- Panel: `UiColor(r, g, b, a)` then `UiRoundedRect(w, h, radius)`, then translate inside it.
+  `UiCircle(r)`, `UiTextShadow`, `UiAlign("right top")` all behaved as named.
+- Always pair `UiPush()` / `UiPop()` around each element, and return early while `shared` is
+  still nil (the first client frames).
+- Scripts draw in the order they are listed in the level, on one canvas: two scripts that
+  both use the top-right corner overlap. Give each HUD its own region.
+- Fonts used: `regular.ttf`, `bold.ttf`.
+
+## 6. Camera
+
+```lua
+function client.tick(dt)
+	if GetBool("level.cam.orbit") then
+		angle = angle + dt * 0.35
+		local pos = VecAdd(CENTER, Vec(math.cos(angle) * 16, 7, math.sin(angle) * 16))
+		SetCameraTransform(Transform(pos, QuatLookAt(pos, CENTER)))
+		SetCameraFov(60)
+	end
+end
+```
+
+- Both calls are client-only and must be made every tick; stop calling and the normal camera
+  returns.
+- Each client runs its own camera: with a synced flag both players orbit, each at its own
+  angle.
+- To move a *player* instead (for a screenshot), use the bridge's `look_at`, or on the server
+  `SetPlayerTransformWithPitch(Transform(feet, QuatLookAt(eye, target)), playerId)` with
+  `eye = feet + Vec(0, 1.7, 0)`.
+
+## 7. Weather and look
+
+`SetEnvironmentProperty(name, ...)` is server-only and reaches joined clients. Names are not
+case-sensitive. Present in 2.2.0 with their values in the `sunny` template:
+
+`skybox` (day.dds), `skyboxtint` (r,g,b), `skyboxbrightness`, `skyboxrot`, `constant` (r,g,b),
+`ambient`, `ambientexponent`, `fogColor` (r,g,b), `fogParams` (start, end, amount, exponent),
+`fogscale`, `sunBrightness`, `sunColorTint` (r,g,b), `sunDir`, `sunSpread`, `sunLength`,
+`sunFogScale`, `sunGlare`, `exposure` (min,max), `brightness`, `wetness`, `puddleamount`,
+`puddlesize`, `rain`, `nightlight`, `ambience` (file, volume), `slippery`, `waterhurt`,
+`snowdir`, `snowamount`, `wind`. Unknown: `template`, `snowonground`, `fogheight`.
+
+Post-processing (`GetPostProcessingProperty`): `saturation`, `colorbalance` (r,g,b),
+`brightness`, `gamma`, `bloom`. Unknown: `contrast`, `vignette`, `exposure`.
+
+A dusk fade that worked: over 3 s lerp `sunBrightness` 6 → 0.6, `skyboxtint` to (1, 0.55,
+0.35), `skyboxbrightness` 1 → 0.35, `fogColor` to (0.45, 0.25, 0.2), `rain` to 0.8, `wetness`
+to 1.
+
+## 8. Shooting and destruction
+
+- `Shoot(origin, dir, "bullet", strength)` is server-only. **Strength scales the size of the
+  damage, not just its force**: one strength-3 bullet at a row of wooden planks 3 m apart
+  destroyed the one it hit and its neighbour and damaged the next. Use 1 for a normal shot.
+- A `Shoot` issued in the first second after a level load had no effect (seen twice). Delay
+  scripted shots.
+- A hit dynamic prop breaks apart: the pieces are new bodies, and the original shape handle
+  stays valid with few or zero voxels. Test `IsBodyBroken(body)` for "destroyed";
+  `GetShapeVoxelCount` of the original shape is not a health value once it has split.
+- `QueryRaycast(origin, dir, maxDist)` → `hit, dist, normal, shape` is the cheap way to check
+  what a shot would hit first.
+
+## 9. Joints and triggers
+
+A gate on a motorised hinge that opens while a player stands in a zone:
+
+```xml
+<group name="gate" pos="14.0 0.0 -8.0">
+	<body> <voxbox pos="-2.4 0.0 -0.2" size="4 30 4"/> </body>              <!-- static post -->
+	<body dynamic="true" tags="gate">
+		<voxbox pos="-2.0 0.3 -0.1" size="36 20 2" material="wood">
+			<joint tags="gatehinge" pos="0.0 1.0 0.1" rot="90.0 0.0 0.0" type="hinge"
+			       size="0.3" limits="-100 100" rotstrength="0" rotspring="0"/>
+		</voxbox>
+	</body>
+	<trigger tags="gatezone" pos="0.0 -0.5 3.0" type="box" size="6 4.5 5"/>
+</group>
+```
+
+```lua
+function server.tick(dt)
+	local occupied = false
+	for p in Players() do                                  -- #include "script/include/player.lua"
+		if IsPointInTrigger(zone, GetPlayerTransform(p).pos) then occupied = true end
+	end
+	SetJointMotorTarget(hinge, occupied and 90 or 0, 1.5, 500)   -- degrees, max speed, strength
+end
+```
+
+- **A joint connects the shapes it overlaps.** It is written as a child of one shape, at a
+  position relative to that shape, and it must reach into the other one: `size` is its reach
+  in metres. A joint 5 cm outside its own panel attached to nothing (`#GetJointShapes(j)` was
+  0, `IsBodyJointedToStatic(body)` false) without any error. Check those two after loading.
+- `rot="90 0 0"` on a hinge gave a vertical axis (a door). `GetJointMovement(j)` returns the
+  angle in degrees; the gate reached 89.9 within a second.
+- **Trigger:** `pos` is the bottom centre, `size` is in metres (`GetTriggerBounds` confirmed
+  it). `IsPointInTrigger`, `IsBodyInTrigger`, `GetTriggerDistance` (negative inside) work in
+  server and client code.
+- **A standing player's position is about 1 cm below the surface they stand on** (y = -0.01 on
+  a floor at y = 0). A trigger whose floor is exactly at ground level does not contain them.
+  Start the trigger below the floor, or test a point above the feet.
+- A dynamic body that loads at rest is asleep (`IsBodyActive` false) and stays where it is,
+  even in mid-air, until something touches it. An unattached gate hung in the air looking
+  correct; a body staying put is not proof that a joint holds it.
+
+## 10. A custom hand tool
+
+Prefab (`prefab/blaster.xml`), modelled on the built-in minigun:
+
+```xml
+<prefab version="1.5.4">
+	<group name="instance=MOD/prefab/blaster.xml">
+		<group name="eye_space">
+			<location name="fp_action" tags="name=fp_action" pos="0.25 -0.3 -0.2"/>
+			<location name="fp_run" tags="name=fp_run" pos="0.25 -0.5 -0.2" rot="20.0 40.0 0.0"/>
+			<location name="tp_action" tags="name=tp_action" pos="0.1 -0.5 -0.1"/>
+			<!-- tp_run, tp_crouch likewise -->
+		</group>
+		<group name="tool_space">
+			<body dynamic="false">
+				<voxbox pos="-0.05 -0.05 -0.6" size="1 1 6" color="0.15 0.5 0.9"/>
+			</body>
+			<location name="tp_action_rh" tags="name=tp_action_rh ik_hand" pos="0.0 -0.1 -0.05" rot="0.0 90.0 0.0"/>
+			<location name="muzzle" tags="name=muzzle" pos="0.0 0.0 -0.65"/>
+		</group>
+	</group>
+</prefab>
+```
+
+```lua
+function server.init()
+	RegisterTool("mcpblaster", "Blaster", "MOD/prefab/blaster.xml", 6)
+end
+
+local function fire(p)
+	local muzzle = GetToolLocationWorldTransform("muzzle", p)
+	local hit, startPos, endPos, dir = GetPlayerAimInfo(muzzle.pos, 60, p)
+	Explosion(endPos, 0.5)
+	ClientCall(0, "client.blasterBeam", muzzle.pos[1], muzzle.pos[2], muzzle.pos[3], endPos[1], endPos[2], endPos[3])
+end
+
+function server.tick(dt)
+	for p in PlayersAdded() do                 -- every player who joins, the host included
+		SetToolEnabled("mcpblaster", true, p)
+		SetToolAmmo("mcpblaster", 50, p)
+	end
+	for p in Players() do
+		if GetPlayerTool(p) == "mcpblaster" and InputPressed("usetool", p) then fire(p) end
+	end
+end
+
+function client.tick(dt)
+	if GetPlayerTool() == "mcpblaster" then
+		SetToolTransform(Transform(Vec(0.3, -0.3, -0.5)), 1.0)   -- every frame
+	end
+end
+```
+
+- **Without `SetToolTransform` every frame the tool sits exactly at the camera**: the whole
+  view was the colour of the barrel. The `eye_space` locations alone do not place it (the
+  built-in tools use `script/toolanimation.lua` or their own `SetToolTransform`).
+  `SetToolTransform` is client-only.
+- The tool shows up in the tool bar under its name once registered and enabled;
+  `SetPlayerTool("mcpblaster", p)` (server) equips it. Its name is also readable at
+  `game.tool.<id>.name`.
+- `GetToolBody(p)` returns a negative handle: the held tool is a client-side entity.
+- `GetPlayerAimInfo(pos, maxDist, p)` returns `hit, startPos, endPos, dir`: where the
+  player's aim from `pos` lands. Works in server code for any player.
+- A real click through `send_input` reached `InputPressed("usetool", p)` on the server and
+  fired once. A registry switch (`level.blaster.fire = <playerId>`, consumed in
+  `server.tick`) is still handy for firing without taking window focus.
+- With the sandbox script loaded, `GetToolAmmo` reported 9999 (unlimited ammo) whatever
+  `SetToolAmmo` set.
+
+## 11. A clickable menu
+
+Opened with a key, with buttons and a slider; each control reports to the server. Clicked and
+dragged through `send_input`, results read back from the registry.
+
+```lua
+local open, slider = false, 0.5
+
+function server.menuAction(action, value)            -- runs on the server for every client
+	SetInt("level.menu.clicks", GetInt("level.menu.clicks") + 1, true)
+	if action == "dusk" then SetBool("level.director.dusk", not GetBool("level.director.dusk"), true) end
+end
+
+function client.tick(dt)
+	if InputPressed("m") then open = not open end      -- any key name works as an input
+end
+
+function client.draw()
+	if not open then return end
+	UiMakeInteractive()                                -- frees the cursor, blocks game input
+	UiPush()
+	UiTranslate(UiCenter(), 500)
+	UiAlign("center top")
+	UiColor(0.08, 0.09, 0.12, 0.92)
+	UiRoundedRect(560, 520, 18)
+	UiTranslate(0, 120)
+	UiColor(1, 1, 1, 1)
+	UiFont("bold.ttf", 36)
+	UiButtonImageBox("ui/common/box-outline-6.png", 6, 6, 1, 1, 1, 0.8)
+	UiButtonHoverColor(1, 0.8, 0.3, 1)
+	if UiTextButton("Toggle dusk", 420, 70) then
+		ServerCall("server.menuAction", "dusk", 0)
+	end
+	UiTranslate(-200, 260)
+	UiAlign("center middle")
+	local value, done = UiSlider("ui/common/dot.png", "x", slider * 400, 0, 400)
+	slider = value / 400
+	if done then ServerCall("server.menuAction", "slider", slider) end   -- on release
+	UiPop()
+end
+```
+
+- `UiTextButton(label, w, h)` returns true on the frame it is clicked. One real click gave
+  exactly one action.
+- `UiSlider(image, "x", current, min, max)` returns `value, done`; `done` is true when the
+  drag ends. `current` and the range are in canvas pixels of travel.
+- While `UiMakeInteractive()` is called each frame, clicks go to the UI and not to the held
+  tool (the tool's shot counter did not move).
+- UI state (`open`, `slider`) lives on the client; anything that must affect the game goes
+  through `ServerCall`, and anything the UI shows about the game comes from synced registry
+  keys or `shared`.
+
+A text field (same `client.draw`, after the slider). `name`, `typing` and `focus` are client
+locals:
+
+```lua
+UiAlign("left top")
+UiColor(1, 1, 1, 0.8)
+UiImageBox("ui/common/box-outline-4.png", 400, 44, 12, 12)   -- UiTextInput draws no frame
+UiColor(1, 1, 1, 1)
+UiFont("regular.ttf", 26)
+local text, active = UiTextInput(name, 400, 44, focus)       -- focus: true for one frame
+focus = false
+if text ~= name then
+	name = text
+	ServerCall("server.menuAction", "name", name)
+end
+typing = active          -- in client.tick: ignore key bindings while typing is true
+```
+
+## 12. Development loop that worked
+
+1. `mp_test_start { "mod": "<folder>" }` once.
+2. Edit, `reload_scene` (2 s here), `read_log` for errors with the mod's name in `contains`.
+3. Flip the mod's registry switches with `registry_set`, then `look_at` the action and
+   `screenshot`. For the joined client's view: `screenshot` with `window: "TD - Client1"`.
+4. When the picture and the numbers disagree, read the entities directly (a small Lua file
+   with `FindBodies(tag, true)`, voxel counts, `IsBodyBroken`, positions) rather than
+   trusting the mod's own counters. Sampling the same reader a few times a second showed the
+   cause of a wrong score within one run.

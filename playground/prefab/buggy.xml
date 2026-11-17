@@ -1,0 +1,28 @@
+<prefab version="2.0.0">
+	<group name="buggy">
+		<vehicle name="buggy" tags="mcpbuggy" sound="classic1" spring="0.5" damping="0.7" topspeed="60" acceleration="4" strength="4" steerassist="0.1">
+			<body pos="0.0 0.6 0.0" dynamic="true">
+				<voxbox pos="-0.8 0.0 -1.5" size="16 5 30" color="0.8 0.2 0.1"/>
+				<voxbox pos="-0.6 0.5 0.4" size="12 5 8" color="0.9 0.9 0.9"/>
+				<location name="player" tags="player" pos="0.0 0.9 0.0"/>
+				<location tags="exit" pos="-1.6 0.3 0.0"/>
+				<!-- Wheels belong inside the body; outside it they are just more boxes. -->
+				<wheel name="fl" pos="-0.95 -0.25 -1.1" steer="1" travel="-0.2 0.1">
+					<voxbox pos="-0.1 -0.35 -0.35" size="2 7 7" color="0.1 0.1 0.1"/>
+				</wheel>
+				<wheel name="fr" pos="0.95 -0.25 -1.1" steer="1" travel="-0.2 0.1">
+					<voxbox pos="-0.1 -0.35 -0.35" size="2 7 7" color="0.1 0.1 0.1"/>
+				</wheel>
+				<wheel name="bl" pos="-0.95 -0.25 1.1" drive="1" travel="-0.2 0.1">
+					<voxbox pos="-0.1 -0.35 -0.35" size="2 7 7" color="0.1 0.1 0.1"/>
+				</wheel>
+				<wheel name="br" pos="0.95 -0.25 1.1" drive="1" travel="-0.2 0.1">
+					<voxbox pos="-0.1 -0.35 -0.35" size="2 7 7" color="0.1 0.1 0.1"/>
+				</wheel>
+			</body>
+			<rig name="driver" tags="driver sort=0">
+				<location name="seat" tags="seat" pos="0.0 0.9 0.3"/>
+			</rig>
+		</vehicle>
+	</group>
+</prefab>

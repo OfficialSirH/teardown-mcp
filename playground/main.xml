@@ -1,0 +1,33 @@
+<scene version="3" shadowVolume="200 100 200">
+	<environment template="sunny" skyboxrot="-45"/>
+	<voxbox pos="-100.0 -0.1 -100.0" size="2000 1 2000"/>
+	<spawnpoint pos="0.0 0.0 0.0" rot="0.0 180.0 0.0"/>
+	<boundary>
+		<vertex pos="-100.0 -100.0"/>
+		<vertex pos="100.0 -100.0"/>
+		<vertex pos="100.0 100.0"/>
+		<vertex pos="-100.0 100.0"/>
+	</boundary>
+	<!-- Mini-mod 4: a gate on a hinge that opens while someone stands in the trigger zone -->
+	<group name="gate" pos="14.0 0.0 -8.0">
+		<body>
+			<voxbox pos="-2.4 0.0 -0.2" size="4 30 4" color="0.3 0.3 0.35"/>
+		</body>
+		<body dynamic="true" tags="mcpgate">
+			<voxbox pos="-2.0 0.3 -0.1" size="36 20 2" material="wood" color="0.5 0.35 0.2">
+				<!-- The joint must overlap both shapes it connects: size is its reach in metres. -->
+				<joint tags="mcpgatehinge" pos="0.0 1.0 0.1" rot="90.0 0.0 0.0" type="hinge" size="0.3" limits="-100 100" rotstrength="0" rotspring="0"/>
+			</voxbox>
+		</body>
+		<!-- Starts below the floor: a standing player's position is about 1 cm under the surface. -->
+		<trigger tags="mcpgatezone" pos="0.0 -0.5 3.0" type="box" size="6 4.5 5"/>
+	</group>
+	<script file="main.lua"/>
+	<script file="sandbox.lua"/>
+	<script file="MOD/script/buggy.lua"/>
+	<script file="MOD/script/range.lua"/>
+	<script file="MOD/script/director.lua"/>
+	<script file="MOD/script/gate.lua"/>
+	<script file="MOD/script/blaster.lua"/>
+	<script file="MOD/script/menu.lua"/>
+</scene>

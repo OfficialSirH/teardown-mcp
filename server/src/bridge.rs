@@ -48,6 +48,10 @@ pub struct Bridge {
     log_re: Regex,
     log_offsets: HashMap<PathBuf, u64>,
     log_state: State,
+    /// Last "<fn> is not available in <side> script" line seen in the game's logs: the engine
+    /// stops that half of the calling script, which is the usual reason a half goes quiet.
+    pub last_side_error: Option<String>,
+    side_re: Regex,
 }
 
 pub type State = HashMap<String, String>;
@@ -144,6 +148,8 @@ impl Bridge {
             log_re: Regex::new(r"mcp([rs])_([0-9a-f]+-[0-9a-f]+)_(\d+)_(?:(\d+)_(\d+)_)?([0-9a-f]*)(?:_\d+)?\.ogg").unwrap(),
             log_offsets: HashMap::new(),
             log_state: State::new(),
+            last_side_error: None,
+            side_re: Regex::new(r"(\S+: )?(\w+) is not available in (client|server) script").unwrap(),
             mod_dir,
             savegame,
             session: new_session(),
@@ -257,6 +263,9 @@ impl Bridge {
             let Some(end) = buf.iter().rposition(|&b| b == b'\n') else { continue };
             let text = String::from_utf8_lossy(&buf[..=end]).into_owned();
             self.log_offsets.insert(path, off + end as u64 + 1);
+            if let Some(c) = self.side_re.captures_iter(&text).last() {
+                self.last_side_error = Some(c[0].to_string());
+            }
             for c in self.log_re.captures_iter(&text) {
                 if c[2] != self.session {
                     continue;
@@ -343,8 +352,8 @@ impl Bridge {
         let failure = loop {
             std::thread::sleep(Duration::from_millis(60));
             let now = Instant::now();
+            self.tail_logs();
             let st = if self.log_mode {
-                self.tail_logs();
                 self.log_state.clone()
             } else {
                 self.read_state().unwrap_or_default()
@@ -402,7 +411,7 @@ impl Bridge {
                     )
                 } else if !ours {
                     format!(
-                        "no answer from the game within {} s. Teardown must be running inside a level (not the main menu) with the \"MCP Bridge\" mod enabled ({}). The bridge cannot run while the game is paused or in a menu, and cannot unpause it: ask the user to resume. screenshot shows what the game is doing.",
+                        "no answer from the game within {} s. Teardown must be running inside a level (not the main menu) with the \"MCP Bridge\" mod enabled ({}). The bridge does not run while a single-player game is paused or in a menu. Take a screenshot: from the pause menu, send_input can click Continue; otherwise ask the user.",
                         limit.as_secs(),
                         if self.log_mode {
                             "multiplayer test window found: expecting replies in its log file"
@@ -412,7 +421,7 @@ impl Bridge {
                     )
                 } else {
                     format!(
-                        "the game stopped answering for {} s (acknowledged up to command {} of {}..={}; the game is probably paused or back in the main menu, which only the user can fix; screenshot shows it). Partial results: {}",
+                        "the game stopped answering for {} s (acknowledged up to command {} of {}..={}; the game is probably paused or back in the main menu; screenshot shows it, and send_input can click Continue in the pause menu). Partial results: {}",
                         limit.as_secs(),
                         last_ack,
                         ids[0],
@@ -431,6 +440,12 @@ impl Bridge {
             }
         };
 
+        let failure = match &self.last_side_error {
+            Some(line) => format!(
+                "{failure}\nThe game's log has: \"{line}\". A call on the wrong side makes the engine stop that half of the calling script until the level reloads; if that was the bridge, reload the level from the other half (reload_scene with side=client or side=server) or restart the multiplayer test."
+            ),
+            None => failure,
+        };
         // Give up: drop the commands so they cannot run later, and if the mod is still
         // holding for a scene that never came, a new session releases it.
         self.pending.clear();

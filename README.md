@@ -55,23 +55,59 @@ Environment variables: `TEARDOWN_DIR` (game folder), `TEARDOWN_MCP_MOD_DIR`, `TE
 ## Tools
 
 `ping`, `bridge_status`, `run_lua`, `call_api`, `reload_scene`, `start_level`, `game_command`,
-`batch`, `registry_get`, `registry_set`, `registry_clear`, `player_get`, `player_set`, `spawn`,
+`batch`, `registry_get`, `registry_set`, `registry_clear`, `player_get`, `player_set`, `look_at`,
+`spawn`,
 `delete_entities`, `find_entities`, `describe_entity`, `raycast`, `debug_print`, `screenshot`,
-`read_log`, `mp_test_start`, `mp_test_stop`.
+`read_log`, `send_input`, `mp_test_start`, `mp_test_stop`, `wait_for_players`. Each is described in
+`skill/teardown-modding/references/bridge.md`.
+
+Most take `side`, where the command runs:
+
+| side | Runs in |
+|---|---|
+| `server` (default) | the host's server half |
+| `client` | the host's client half |
+| `draw` | the host's `client.draw()`, the only place `Ui*` functions exist |
+| `remote` | the joined client's game (local multiplayer test only) |
+
+The mod is a `#version 2` script, so the two halves are separate Lua states; each runs the
+commands addressed to it, in order. `run_lua` takes `code` or a Lua `file`.
+
+Calling an API function from the wrong half makes the engine stop that half of the script
+instead of raising an error. The bridge replaces the 71 functions known to do this (measured,
+lists in `mod/main.lua`) with ones that raise a normal error, so a wrong-side call through the
+bridge fails cleanly.
 
 `mp_test_start` launches the game's local multiplayer test (host + client windows,
-`teardown_modtest.exe`) for a mod, with the bridge loaded, and waits until the host answers.
-`mod` is a mod id or a folder name under `Documents\Teardown\mods`; `level` picks a level XML
-other than the mod's `main.xml` (for example to skip a mod's own menu level).
+`teardown_modtest.exe`) for a mod, with the bridge loaded, and waits until both players are in
+the level. `mod` is a mod id or a folder name under `Documents\Teardown\mods`; `level` picks a
+level XML other than the mod's `main.xml`.
 
-Most take `side`: `server` (default) or `client`. The mod is a `#version 2` script, so the host's
-server and client halves are separate Lua states; both poll the inbox and each runs the commands
-addressed to it, in order.
+## The skill
+
+`skill/teardown-modding/` is a Claude skill: how to work with the bridge, an index of every API
+function with the side it may be called from, and the engine behaviour measured through the
+bridge. To install it for Claude Code, link or copy the folder to
+`~/.claude/skills/teardown-modding`. `tools/probe/` holds the probes behind it.
+
+## The playground
+
+`playground/` is a small level mod used to try the API in real use: a hand-built buggy with a
+server autopilot and a speed HUD, a target range with a turret, synced score and effects, a
+"director" with an orbit camera, a weather fade and an overlay panel, a gate on a motorised
+hinge opened by a trigger zone, a custom hand tool (the Blaster), and a clickable menu (M). Link it to
+`Documents\Teardown\mods\mcp-playground` and start it with
+`mp_test_start { "mod": "mcp-playground" }`. Each script is switched on through a registry
+flag (`level.buggy.autopilot`, `level.range.fire`, `level.director.orbit`,
+`level.director.dusk`, `level.gate.force`, `level.blaster.fire`). `tools/lua/` has small reader scripts for `run_lua`.
 
 ## Limits
 
-- Mod scripts do not run in the pause menu or the main menu, and nothing can be done from outside
-  to leave them. If the game stops answering, someone has to resume it by hand.
+- In single-player, mod scripts do not run in the pause menu or the main menu. `send_input` can
+  click the game out of the pause menu (verified); everything else waits until a level runs
+  again. The multiplayer test does not pause at all.
+- `send_input` sends real keyboard and mouse events: it brings the game window to the front and
+  the user loses keyboard focus while it runs.
 - `start_level` with a path the engine cannot load drops the game to the main menu. A successful
   `start_level` has not been verified yet.
 - `run_lua` runs inside the bridge's script: it has the whole engine API and the registry, but

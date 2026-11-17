@@ -76,6 +76,9 @@ pub fn resolve(
             ids.iter().find(|i| i.starts_with(&want) && i.len() == want.len() + 1)
         }) {
             Some(i) => i.clone(),
+            // Not in mods.xml yet (the main game has not seen it), but the folder is there.
+            None if mod_folder(&want, game_dir, local_mods).is_some() => want.clone(),
+            None if mod_folder(mod_arg, game_dir, local_mods).is_some() => mod_arg.to_string(),
             None => {
                 let mut local: Vec<&String> = ids.iter().filter(|i| i.starts_with("local-")).collect();
                 local.sort();
@@ -131,7 +134,30 @@ pub fn stop() -> bool {
     was
 }
 
+#[cfg(windows)]
+fn keep_stdio_private() {
+    // A started game inherits every inheritable handle of ours, including the pipes an MCP
+    // client talks to us through; the client would then wait on the game for end-of-output.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    for which in [-10i32 as u32, -11i32 as u32, -12i32 as u32] {
+        unsafe {
+            let h = GetStdHandle(which);
+            if !h.is_null() {
+                SetHandleInformation(h, 1, 0); // HANDLE_FLAG_INHERIT off
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn keep_stdio_private() {}
+
 pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<(), String> {
+    keep_stdio_private();
     let exe = game_dir.join(EXE);
     if !exe.is_file() {
         return Err(format!("{} not found (set TEARDOWN_DIR to the game folder)", exe.display()));

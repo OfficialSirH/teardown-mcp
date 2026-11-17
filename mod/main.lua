@@ -76,34 +76,10 @@ local function pct(s)
 	end))
 end
 
--- Second way out, for the multiplayer test windows (they never write savegame.xml):
--- a failed LoadSound puts its path in the game's log file, so the path carries the data.
--- The log is written in 4 KB blocks; padding lines push the real ones out.
-local padCount = 0
-
-local function logLine(name)
-	pcall(LoadSound, "MOD/" .. name .. ".ogg")
-end
-
-local function logFlush(side)
-	local pad = string.rep("p", 200)
-	local tag = "mcpp_" .. string.sub(side, 1, 1) .. GetInt(P .. "scene") .. "_"
-	for _ = 1, 16 do
-		padCount = padCount + 1
-		logLine(tag .. padCount .. "_" .. pad)
-	end
-end
-
-local function hex(s)
-	return (string.gsub(s, ".", function(c) return string.format("%02x", string.byte(c)) end))
-end
-
-local function writeResult(id, tbl, side)
-	local json = enc(tbl, 0, {})
-	local s = pct(json)
+local function writeResult(id, tbl)
+	local s = pct(enc(tbl, 0, {}))
 	if #s > MAXLEN then
-		json = enc({ ok = false, error = "result too large (" .. #s .. " chars), narrow the query" }, 0, {})
-		s = pct(json)
+		s = pct(enc({ ok = false, error = "result too large (" .. #s .. " chars), narrow the query" }, 0, {}))
 	end
 	local n = math.max(1, math.ceil(#s / CHUNK))
 	for i = 1, n do
@@ -111,15 +87,60 @@ local function writeResult(id, tbl, side)
 	end
 	SetInt(P .. "r" .. id .. "_n", n)
 	SetInt(P .. "ack", id)
+end
 
-	if GetInt(P .. "log") == 1 then
-		local h = hex(json)
-		local m = math.max(1, math.ceil(#h / 400))
-		local head = "mcpr_" .. GetString(P .. "session") .. "_" .. id .. "_"
-		for i = 1, m do
-			logLine(head .. i .. "_" .. m .. "_" .. string.sub(h, (i - 1) * 400 + 1, i * 400))
+-- Second way out, for the multiplayer test windows (they never write savegame.xml):
+-- a failed LoadSound puts its path in the game's log file, so the path carries the data.
+-- The log is written in 4 KB blocks; padding lines push the real ones out.
+--
+-- Only the client half does this. A sound loaded by the server half is replicated to every
+-- joined client (each one then logs the same failure and keeps the sound for the whole
+-- scene), so the server half only writes its results to the registry and the client half of
+-- the same game relays them.
+local padCount = 0
+
+local function logLine(name)
+	pcall(LoadSound, "MOD/" .. name .. ".ogg")
+end
+
+local function hex(s)
+	return (string.gsub(s, ".", function(c) return string.format("%02x", string.byte(c)) end))
+end
+
+local function relayToLog()
+	if GetInt(P .. "log") ~= 1 then return end
+	local wrote = false
+	if GetInt(P .. "announce") == 1 then
+		SetInt(P .. "announce", 0)
+		logLine("mcps_" .. GetString(P .. "session") .. "_" .. GetInt(P .. "ack") .. "_"
+			.. hex(GetString("game.levelpath")) .. "_" .. GetInt(P .. "scene"))
+		wrote = true
+	end
+	local ack, relayed = GetInt(P .. "ack"), GetInt(P .. "relayed")
+	if relayed > ack then relayed = 0 end -- a new session started the ids over
+	for id = relayed + 1, ack do
+		local n = GetInt(P .. "r" .. id .. "_n")
+		if n > 0 then
+			local parts = {}
+			for i = 1, n do parts[i] = GetString(P .. "r" .. id .. "_" .. i) end
+			local json = string.gsub(table.concat(parts), "%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+			local h = hex(json)
+			local m = math.max(1, math.ceil(#h / 400))
+			local head = "mcpr_" .. GetString(P .. "session") .. "_" .. id .. "_"
+			for i = 1, m do
+				logLine(head .. i .. "_" .. m .. "_" .. string.sub(h, (i - 1) * 400 + 1, i * 400))
+			end
+			wrote = true
 		end
-		logFlush(side)
+	end
+	if ack ~= relayed then SetInt(P .. "relayed", ack) end
+	if wrote then
+		local pad = string.rep("p", 200)
+		local tag = "mcpp_" .. GetInt(P .. "scene") .. "_" .. math.random(100000, 999999) .. "_"
+		for _ = 1, 16 do
+			padCount = padCount + 1
+			logLine(tag .. padCount .. "_" .. pad)
+		end
 	end
 end
 
@@ -211,9 +232,24 @@ end
 
 local A = {}
 
+-- Players whose own game has this script running (each client reports once, see client.tick).
+-- Only the server half fills this.
+local readyPlayers = {}
+
+local function playerList(side)
+	local list = {}
+	for i, p in ipairs(GetAllPlayers() or {}) do
+		list[i] = { id = p, name = try(GetPlayerName, p), host = try(IsPlayerHost, p) }
+		if side == "server" then list[i].ready = readyPlayers[p] == true end
+		if side ~= "server" then list[i].me = (p == GetLocalPlayer()) end
+	end
+	return list
+end
+
 function A.ping(a, side)
 	return {
 		side = side,
+		players = playerList(side),
 		version = GetVersion(),
 		level_path = GetString("game.levelpath"),
 		level_id = GetString("game.levelid"),
@@ -224,8 +260,13 @@ function A.ping(a, side)
 end
 
 function A.run_lua(a)
-	local f, err = loadstring("return " .. a.code, "=mcp")
-	if not f then f, err = loadstring(a.code, "=mcp") end
+	local f, err
+	if a.file then
+		f, err = loadfile(a.file)
+	else
+		f, err = loadstring("return " .. a.code, "=mcp")
+		if not f then f, err = loadstring(a.code, "=mcp") end
+	end
 	if not f then error("syntax: " .. tostring(err), 0) end
 	local out = {}
 	local oldPrint = print
@@ -379,6 +420,24 @@ function A.raycast(a)
 	return res
 end
 
+-- Put a player where they can see something: at `target` (a position or an entity handle) plus
+-- `from` (default 5 m to the side, 2 m up), facing it. Server side.
+function A.look_at(a)
+	local t = a.target
+	if type(t) == "number" then
+		local tr = entityPos(t, GetEntityType(t))
+		if not tr then error("cannot take a position from entity " .. tostring(t), 0) end
+		t = tr.pos
+	else
+		t = vec(t or {})
+	end
+	local p = a.player or 0
+	local feet = VecAdd(t, a.from and vec(a.from) or Vec(-5, 2, 5))
+	SetPlayerVelocity(Vec(0, 0, 0), p)
+	SetPlayerTransformWithPitch(Transform(feet, QuatLookAt(VecAdd(feet, Vec(0, 1.7, 0)), t)), p)
+	return { feet = feet, target = t }
+end
+
 function A.debug_print(a)
 	DebugPrint(tostring(a.text))
 end
@@ -387,13 +446,62 @@ end
 local RELOADS = { restart = true, start_level = true }
 
 ---------------------------------------------------------------------------
+-- Wrong-side guard
+---------------------------------------------------------------------------
+
+-- Calling one of these from the wrong half does not raise a Lua error: the engine logs
+-- "<fn> is not available in <side> script" and stops that half of the script for the rest of
+-- the scene once the callback returns. That would silently kill the bridge, so the bridge
+-- replaces them in its own Lua state with functions that raise a normal error instead.
+-- Lists measured in Teardown 2.2.0 (tools/probe/allcalls.lua).
+local CLIENT_ONLY = { -- "not available in server script"
+	"AddMapMarker", "AttachCameraTo", "CopyAnimatorState", "CreateHaptic", "DisableMotionBlur",
+	"GetCameraTransform", "HapticIsPlaying", "LoadHaptic", "PlayHaptic", "PlayHapticDirectional",
+	"PlaySoundForUser", "RequestFirstPerson", "RequestThirdPerson", "SaveCameraOverrideTransform",
+	"SelectedMapMarker", "SetCameraDof", "SetCameraFov", "SetCameraOffsetTransform",
+	"SetCameraTransform", "SetLowHealthBlurThreshold", "SetPivotClipBody",
+	"SetPlayerCameraOffsetTransform", "SetPlayerRigTags", "SetSoundLoopUser", "SetToolAllowedZoom",
+	"SetToolHandPoseLocalTransform", "SetToolHaptic", "SetToolOffset", "SetToolTransform",
+	"SetToolTransformOverride", "ShakeCamera", "StopHaptic",
+}
+local SERVER_ONLY = { -- "not available in client script"
+	"AddHeat", "AddSnow", "ApplyPlayerDamage", "DisablePlayerDamage", "DriveVehicle", "Explosion",
+	"MakeHole", "Paint", "PaintRGBA", "RegisterTool", "ReleasePlayerGrab", "RemoveAabbFires",
+	"SetEnvironmentProperty", "SetGravity", "SetPlayerCrouchSpeedScale", "SetPlayerGroundVelocity",
+	"SetPlayerHealth", "SetPlayerHurtSpeedScale", "SetPlayerParam", "SetPlayerRegenerationState",
+	"SetPlayerScreen", "SetPlayerSpawnHealth", "SetPlayerSpawnTool", "SetPlayerSpawnTransform",
+	"SetPlayerTool", "SetPlayerTransform", "SetPlayerTransformWithPitch", "SetPlayerVehicle",
+	"SetPlayerVelocity", "SetPlayerWalkingSpeed", "SetTimeScale", "SetToolAmmo",
+	"SetToolAmmoPickupAmount", "SetToolEnabled", "SetVehicleEngineHealth", "SetVehicleHealth",
+	"SetVehicleParam", "Shoot", "SpawnFire",
+}
+
+local guarded = false
+
+local function installGuards(side)
+	if guarded then return end
+	guarded = true
+	local half = (side == "server") and "server" or "client"
+	for _, name in ipairs(half == "server" and CLIENT_ONLY or SERVER_ONLY) do
+		_G[name] = function()
+			error(name .. " is not available in " .. half .. " script. The bridge blocked the call: the engine would not raise an error, it would stop the " .. half .. " half of this script. Run it with side=" .. (half == "server" and "client" or "server") .. ".", 2)
+		end
+	end
+end
+
+---------------------------------------------------------------------------
 -- Pump
 ---------------------------------------------------------------------------
 
 local lastDone = -1
+local pendingReload = nil
 
+-- side: "server" / "client" (the host's two halves), "draw" (the host's client.draw, the only
+-- place Ui* functions exist), "remote" (a joined client's game; local multiplayer test only,
+-- where it can read the same command file and answers through its own log file).
 local function pump(side)
 	if not INBOX then return end -- no path in mcp_config.lua
+	installGuards(side)
 	local f = loadfile(INBOX)
 	if not f then return end
 	local ok, box = pcall(f)
@@ -402,11 +510,28 @@ local function pump(side)
 	if box.session ~= GetString(P .. "session") then
 		clearResults(nil)
 		SetInt(P .. "ack", 0)
+		SetInt(P .. "started", 0)
+		SetInt(P .. "relayed", 0)
 		SetInt(P .. "halt", 0)
 		SetInt(P .. "waiting", 0)
 		SetString(P .. "session", box.session)
 	end
 	SetInt(P .. "log", box.log and 1 or 0)
+	if pendingReload then
+		pendingReload.polls = pendingReload.polls - 1
+		if pendingReload.polls <= 0 then
+			local pr = pendingReload
+			pendingReload = nil
+			local good, err = pcall(pr.h, pr.args, side)
+			if not good then
+				SetInt(P .. "halt", 0)
+				SetInt(P .. "waiting", 0)
+				writeResult(pr.id, { ok = false, error = tostring(err) })
+				SetInt(P .. "relayed", pr.id - 1)
+			end
+		end
+		return
+	end
 	if GetInt(P .. "halt") == 1 then return end
 
 	local done = box.done or 0
@@ -417,29 +542,40 @@ local function pump(side)
 
 	local ack = GetInt(P .. "ack")
 	for _, cmd in ipairs(box.cmds or {}) do
-		if cmd.id > ack then
-			if (cmd.side or "server") ~= side then return end
+		local cside = cmd.side or "server"
+		if cmd.id <= ack then
+			-- done already
+		elseif (side == "remote") ~= (cside == "remote") then
+			-- Another game's command. A joined client just looks past it; the host steps
+			-- over it so its own later commands are not held up.
+			if side ~= "remote" then
+				ack = cmd.id
+				SetInt(P .. "ack", ack)
+			end
+		elseif cside ~= side then
+			return -- the host's other half goes first
+		else
 			local h = A[cmd.action]
 			local args = cmd.args or {}
 			if not h then
-				writeResult(cmd.id, { ok = false, error = "unknown action: " .. tostring(cmd.action) }, side)
+				writeResult(cmd.id, { ok = false, error = "unknown action: " .. tostring(cmd.action) })
+			elseif GetInt(P .. "started") == cmd.id then
+				-- It was started on an earlier poll and never came back: the engine ended the
+				-- callback in a way pcall cannot catch. Running it again would loop forever.
+				writeResult(cmd.id, { ok = false, error = "the command ended the script callback without returning (an engine error that pcall cannot catch); it was not run again" })
 			elseif RELOADS[cmd.action] or cmd.wait_scene then
 				SetInt(P .. "halt", 1)
 				if cmd.wait_scene then SetInt(P .. "waiting", 1) end
-				writeResult(cmd.id, { ok = true, result = "scene load requested" }, side)
-				local good, err = pcall(h, args, side)
-				if not good then
-					SetInt(P .. "halt", 0)
-					SetInt(P .. "waiting", 0)
-					writeResult(cmd.id, { ok = false, error = tostring(err) }, side)
-				end
+				writeResult(cmd.id, { ok = true, result = "scene load requested" })
+				pendingReload = { h = h, args = args, id = cmd.id, polls = 3 }
 				return
 			else
+				SetInt(P .. "started", cmd.id)
 				local r = { pcall(h, args, side) }
 				if r[1] then
-					writeResult(cmd.id, { ok = true, result = r[2] }, side)
+					writeResult(cmd.id, { ok = true, result = r[2] })
 				else
-					writeResult(cmd.id, { ok = false, error = tostring(r[2]) }, side)
+					writeResult(cmd.id, { ok = false, error = tostring(r[2]) })
 				end
 			end
 			ack = cmd.id
@@ -462,11 +598,7 @@ function server.tick(dt)
 		SetInt(P .. "scene", GetInt(P .. "scene") + 1)
 		SetInt(P .. "halt", 0)
 		SetInt(P .. "waiting", 0)
-		if GetInt(P .. "log") == 1 then
-			logLine("mcps_" .. GetString(P .. "session") .. "_" .. GetInt(P .. "ack") .. "_"
-				.. hex(GetString("game.levelpath")) .. "_" .. GetInt(P .. "scene"))
-			logFlush("server")
-		end
+		SetInt(P .. "announce", 1)
 	end
 	sTimer = sTimer + dt
 	if sTimer < POLL then return end
@@ -474,11 +606,31 @@ function server.tick(dt)
 	pump("server")
 end
 
+-- A client's game calls this once its scripts run: the player is really in the level.
+function server.mcpReady(p)
+	readyPlayers[p] = true
+end
+
+local reported = false
+
 function client.tick(dt)
+	if not reported then
+		reported = true
+		ServerCall("server.mcpReady", GetLocalPlayer())
+	end
 	cTimer = cTimer + dt
 	if cTimer < POLL then return end
 	cTimer = 0
-	-- Only the host's game talks to the MCP server.
+	-- The host's game runs "client" commands; a joined client's game only "remote" ones.
+	pump(IsPlayerHost(GetLocalPlayer()) and "client" or "remote")
+	relayToLog()
+end
+
+local dFrames = 0
+
+function client.draw()
+	dFrames = dFrames + 1
+	if dFrames % 6 ~= 0 then return end
 	if not IsPlayerHost(GetLocalPlayer()) then return end
-	pump("client")
+	pump("draw")
 end

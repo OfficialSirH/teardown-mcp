@@ -1,0 +1,5 @@
+name = MCP Playground
+author = officialsirh
+description = Test level and mini-mods used to exercise the Teardown API through the MCP bridge.
+tags = Map
+version = 2

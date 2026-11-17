@@ -1,3 +1,9 @@
 server/target/
 savegame-backup-*.xml
 mod/mcp_config.lua
+tools/probe/*.json
+tools/probe/unavailable_*.txt
+tools/probe/getters.lua
+tools/probe/allcalls.lua
+tools/probe/exists.lua
+__pycache__/

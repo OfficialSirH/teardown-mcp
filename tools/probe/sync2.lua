@@ -1,0 +1,23 @@
+-- client / remote: what arrived, and what a client can do itself
+local out = {}
+local function add(k, v) out[#out + 1] = k .. "=" .. tostring(v) end
+add("level.plain", GetString("level.mcpsync.plain"))
+add("level.synced", GetString("level.mcpsync.synced"))
+add("level.syncint", GetInt("level.mcpsync.syncint"))
+add("savegame.mod", GetString("savegame.mod.mcpsync"))
+add("shared.text", shared.mcpsync and shared.mcpsync.text)
+add("shared.list#", shared.mcpsync and #shared.mcpsync.list)
+local b = FindBody("mcpsync_srv", true)
+add("server body handle", b)
+add("server body tag", GetTagValue(b, "note"))
+add("shared write", select(2, pcall(function() shared.fromclient = 1 return "no error" end)))
+add("shared.fromclient after write", shared.fromclient)
+SetString("level.mcpsync.cli_" .. WHO, "c-plain")
+SetString("level.mcpsync.clisync_" .. WHO, "c-synced", true)
+local hs = Spawn('<body tags="mcpsync_' .. WHO .. '" dynamic="false"><voxbox size="2 2 2"/></body>', Transform(Vec(4, 45, 0)))
+add("own spawn handle", hs[1])
+add("own spawn type", GetEntityType(hs[1]))
+add("time", string.format("%.1f", GetTime()))
+add("levelpath", GetString("game.levelpath"))
+add("players", table.concat(GetAllPlayers(), ","))
+return table.concat(out, "\n")

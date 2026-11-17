@@ -1,5 +1,5 @@
 name = MCP Bridge
 author = officialsirh
-description = Development bridge: an external MCP server drives the game through this mod (commands in via a file in the mod folder, results out via the mod's savegame data).
+description = Development bridge: an external MCP server drives the game through this mod (commands in through a file it polls, results out through its savegame data or the game log).
 tags = Tool
 version = 2

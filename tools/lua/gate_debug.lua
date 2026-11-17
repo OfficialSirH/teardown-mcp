@@ -1,0 +1,22 @@
+local z = FindTrigger("mcpgatezone", true)
+local j = FindJoint("mcpgatehinge", true)
+local b = FindBody("mcpgate", true)
+local p = GetPlayerTransform(1).pos
+local out = {}
+local function add(k, v) out[#out + 1] = k .. "=" .. tostring(v) end
+add("player", string.format("%.1f,%.1f,%.1f", p[1], p[2], p[3]))
+add("player in trigger", IsPointInTrigger(z, p))
+add("centre in trigger", IsPointInTrigger(z, Vec(14, 1, -5)))
+add("above centre (y=2) in trigger", IsPointInTrigger(z, Vec(14, 2, -5)))
+add("trigger dist to player", GetTriggerDistance(z, p))
+local tt = GetTriggerTransform(z)
+add("trigger pos", string.format("%.1f,%.1f,%.1f", tt.pos[1], tt.pos[2], tt.pos[3]))
+add("gate body in trigger", IsBodyInTrigger(z, b))
+add("gate shapes", #GetBodyShapes(b))
+add("joints on gate shape", #GetShapeJoints(GetBodyShapes(b)[1]))
+add("jointed bodies", #GetJointedBodies(b))
+add("joint limits", table.concat({ GetJointLimits(j) }, ","))
+add("all joints in scene", #FindJoints("", true))
+add("gate velocity", VecLength(GetBodyVelocity(b)))
+add("gate active", IsBodyActive(b))
+return table.concat(out, "\n")
