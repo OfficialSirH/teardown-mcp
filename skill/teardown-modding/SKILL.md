@@ -30,6 +30,8 @@ wrong guess often fails silently, and each look at the result can cost a level r
    To exercise input paths (a tool's fire button, a clickable menu, driving), `send_input`
    presses keys and clicks in the game window like a player; it takes window focus from the
    user while it runs, so use it deliberately.
+   For performance (what a script costs, in which callback), open the engine profiler with
+   `send_input` (see bridge.md) and read it from a `screenshot`.
 5. Repeat. Batch what you can: one `batch` call with several actions costs one round trip.
 
 Prefer measuring to reasoning. `run_lua` takes a `file` (absolute path, forward slashes): write

@@ -196,13 +196,21 @@ pub fn send(actions: &[Value], window: Option<&str>, restore: bool) -> Result<St
             }
             let hold = a["hold_ms"].as_u64().unwrap_or(60).clamp(10, 5000);
             if let Some(name) = a["key"].as_str() {
-                let Some((code, ext)) = vk(name) else {
-                    failure = Some(format!("unknown key \"{name}\""));
+                // "shift+alt+f3": press in order, release in reverse.
+                let codes: Option<Vec<(u32, bool)>> = name.split('+').map(|k| vk(k.trim())).collect();
+                let Some(codes) = codes else {
+                    failure = Some(format!("unknown key in \"{name}\""));
                     break;
                 };
-                key(code, ext, false);
+                for &(code, ext) in &codes {
+                    key(code, ext, false);
+                    sleep_ms(20);
+                }
                 sleep_ms(hold);
-                key(code, ext, true);
+                for &(code, ext) in codes.iter().rev() {
+                    key(code, ext, true);
+                    sleep_ms(20);
+                }
                 done.push(format!("key {name} ({hold} ms)"));
             } else if let Some(button) = a["click"].as_str() {
                 if let (Some(x), Some(y)) = (a["x"].as_f64(), a["y"].as_f64()) {

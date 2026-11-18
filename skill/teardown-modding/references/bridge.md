@@ -113,6 +113,13 @@ send_input { "actions": [
 - In a vehicle: `w` / `s` drive, `a` / `d` steer, `e` gets in and out.
 - `esc` opens the pause menu. In single-player scripts stop there; in the multiplayer test
   they keep running. A second `esc` or a click on Continue closes it; `screenshot` shows which.
+- Key combos: join names with `+`, pressed in order and released in reverse.
+- **The engine profiler** (CPU per system and per Lua script, per-callback graphs, a log
+  viewer and a live registry viewer): `{ "key": "shift+alt+f3" }` opens, `{ "key": "f3" }`
+  closes. Its mouse works only with the pause menu open (`esc` first, `esc` again to resume).
+  An open Log or Registry window blocks all game input: close it by its x (while paused)
+  before sending game input. Use `hold_ms: 200` for clicks when the frame rate is low.
+  Details in quirks.md, "The engine profiler".
 - `window: "TD - Client1"` drives the joined client instead of the host.
 - Text fields: click the field, then one `key` action per character (`backspace` deletes);
   click outside to release it, Enter does not.

@@ -172,6 +172,7 @@ the server both ran. The function must be defined in the same script file.
   reach `InputPressed`: typing "mom" counted two `InputPressed("m")`, so a key binding must
   be ignored while `active` is true or typing will trigger it. The function draws no frame:
   draw one yourself at the same corner.
+- Profiler: see "The engine profiler" below.
 - Input sent to the joined client's window (`window: "TD - Client1"`) moved and turned only
   that player and opened only that client's UI; a button there reached the server through
   `ServerCall` like a host click.
@@ -246,6 +247,45 @@ the server both ran. The function must be defined in the same script file.
   (the multiplayer test loads it by itself).
 - `StartLevel(mission, path)`: `data/level/hub.xml` was loaded as
   `data/level/data/level/hub.xml` and failed; the next load dropped to the main menu.
+
+### The engine profiler
+
+Explored 2026-11-18, Teardown 2.2.0, single-player (full-size) and the multiplayer test host,
+driven with `send_input`.
+
+- Shift+Alt+F3 opens it, F3 closes it. It is a panel down the left side of the window.
+- Its own help text: "profiling mode" runs one update per frame and caps the frame rate at
+  60 FPS, so the frame rate may differ from normal play but the timings are correct.
+- The panel shows, live: CPU total (ms); counts of bodies, simulated bodies, shapes, visible
+  shapes, visible lights by type, particles; CPU ms per engine system (Destruction, Particle,
+  Path planning, Physics, Rendering, Screen, Script (server), Script, Water); and the top ten
+  Lua scripts by CPU ms. "..." under that list opens every running script by full path
+  (mods' scripts and the game's own `data/script/*.lua`, e.g. playerbody, sandbox,
+  creativemode, achievements, characters, spawn).
+- Selecting a script shows its path, mod name, instance count, memory use of the client and
+  server halves, and last / average / peak ms graphs for each callback: Tick, Update and Post
+  physics update for the server, then Tick, Update, Post physics update, Render and Draw for
+  the client. This is the way to see what a mod's script costs and in which callback.
+- The MCP Bridge itself: about 0.02 ms average per tick, with regular peaks of about 0.35 to
+  0.4 ms in the ticks where it polls the command file; around 250 to 320 kB per half.
+- Log and Registry buttons open windows over the game:
+  - Log: the game log with auto-scroll, a tail line count, a level filter (debug and up), a
+    text filter and per-tag toggles (Init, Render, Window, Loading, Script, VoxScript,
+    LocalMod, StateSwitch, Saving, Network, MatchMaking, SplitServer, SplitClient, ModParity,
+    Presence).
+  - Registry: the whole registry as a tree (characters, game, hud, level, loading, mods,
+    options, promo, promo_mp, savegame, spawn); each key shows its value and full name. It
+    updates live (a key written through the bridge appeared), but values are **read-only**:
+    a click, Ctrl+A, typing and Enter did not change one.
+  - With the Registry window open the frame rate fell from 60 to about 12 FPS.
+- The mouse reaches the panel and its windows **only while the pause menu is open**; while
+  playing, a click on a tab did nothing. A window is closed by its x (while paused).
+- **Input:** with only the panel open, game input works (walking, mouse look, a mod's key
+  binding). With a Log or Registry window open, game input is blocked: `w` for 1 s and a
+  mouse turn did nothing, and worked again once the windows were closed. Not verified:
+  whether those windows stay open when the profiler is closed and reopened.
+- At 12 FPS a 60 ms click is shorter than a frame and was missed; a 200 ms press worked.
+- The bridge kept answering with the profiler and its windows open.
 
 ## 12. Not verified
 
