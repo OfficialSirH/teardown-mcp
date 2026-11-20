@@ -15,7 +15,8 @@ wrong guess often fails silently, and each look at the result can cost a level r
 1. **Get a game.** If none is running in a level, start the local multiplayer test:
    `mp_test_start` with `mod` (a mod id or a folder name under `Documents/Teardown/mods`) and,
    to skip a mod's own menu level, `level`. It opens two windows (host + one client) and
-   returns when both players are in. It needs no main game window. Single-player works too
+   returns when both players are in. `players: 1` opens only the host: still a multiplayer
+   session, lighter and quicker, for work that does not need a second player. It needs no main game window. Single-player works too
    (replies then go through the savegame), but a level must be loaded first: by the user, or
    by clicking Play > Mod manager > the mod > Play > One Player with `send_input`, with "MCP
    Bridge" enabled there.
@@ -30,8 +31,10 @@ wrong guess often fails silently, and each look at the result can cost a level r
    To exercise input paths (a tool's fire button, a clickable menu, driving), `send_input`
    presses keys and clicks in the game window like a player; it takes window focus from the
    user while it runs, so use it deliberately.
-   For performance (what a script costs, in which callback), open the engine profiler with
-   `send_input` (see bridge.md) and read it from a `screenshot`.
+   For performance, `perf_sample` measures frame times, CPU and memory; the engine profiler
+   (opened with `send_input`, see bridge.md) shows what each script costs per callback.
+   When the game crashes, hangs or stops answering: `game_health`, then `crash_report` or
+   `dump_game` (bridge.md, "It crashed, hung or got slow").
 5. Repeat. Batch what you can: one `batch` call with several actions costs one round trip.
 
 Prefer measuring to reasoning. `run_lua` takes a `file` (absolute path, forward slashes): write

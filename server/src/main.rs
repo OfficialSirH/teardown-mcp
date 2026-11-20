@@ -3,6 +3,10 @@
 mod bridge;
 mod mptest;
 #[cfg(windows)]
+mod diag;
+mod exe_names;
+mod name_tables;
+#[cfg(windows)]
 mod input;
 #[cfg(windows)]
 mod shot;
@@ -70,7 +74,7 @@ fn tools() -> Value {
                    "wait": {"type": "boolean"}, "timeout_secs": timeout}), &["path"]),
         tool("game_command", "Run an engine command via Command(), e.g. \"game.quicksave\", \"game.quickload\". Set wait_scene only if the command reloads the scene and its scripts.",
             json!({"command": {"type": "string"}, "args": {"type": "array"}, "wait_scene": {"type": "boolean"}, "timeout_secs": timeout, "side": side}), &["command"]),
-        tool("batch", "Run several bridge actions in order in one go. Actions: ping, run_lua, call, restart, start_level, game_command, registry_get, registry_set, registry_clear, player_get, player_set, look_at, spawn, delete, find, describe, raycast, debug_print. Commands after a restart/start_level run in the new scene.",
+        tool("batch", "Run several bridge actions in order in one go. Actions: ping, run_lua, call, restart, start_level, game_command, registry_get, registry_set, registry_clear, player_get, player_set, look_at, spawn, delete, find, describe, raycast, debug_print, perf (side client: frame counter; args.since = an earlier frame for frame-time stats), scene_stats (entity counts). Commands after a restart/start_level run in the new scene.",
             json!({"commands": {"type": "array", "items": {"type": "object", "properties": {
                         "action": {"type": "string"}, "args": {"type": "object"}, "side": side,
                         "wait_scene": {"type": "boolean", "description": "Wait for a new scene after this command (default true for restart and start_level)."}},
@@ -100,8 +104,9 @@ fn tools() -> Value {
             json!({"mod": {"type": "string", "description": "Mod to start: its id (\"local-my-mod\", \"steam-<workshop id>\", \"builtin-<name>\") or its folder name under Documents/Teardown/mods (\"My Mod\")."},
                    "level": {"type": "string", "description": "Level XML, relative to the mod folder or a full path (default main.xml)."},
                    "extra_mods": {"type": "array", "items": {"type": "string"}, "description": "Ids of further global mods to load besides the bridge (untested)."},
+                   "players": {"type": "integer", "enum": [1, 2], "description": "2 (default): host and client windows. 1: the host window alone, still a multiplayer session (server and client halves, multiplayer rules), quicker to start and lighter."},
                    "restart": {"type": "boolean", "description": "Close a multiplayer test that is already running and start a new one (default false)."},
-                   "wait_for_client": {"type": "boolean", "description": "Also wait until the client window's player is in the level (default true)."},
+                   "wait_for_client": {"type": "boolean", "description": "Also wait until the client window's player is in the level (default true with 2 players)."},
                    "timeout_secs": {"type": "number", "description": "Seconds to wait for the level to load (default 1800)."}}), &["mod"]),
         tool("wait_for_players", "Wait until at least `count` players are in the level with their game's scripts running (each client's game reports to the host once it is really in). Use this instead of guessing from logs or screenshots whether a client has finished joining. Returns the player list.",
             json!({"count": {"type": "integer", "description": "Players needed (default 2)."},
@@ -114,7 +119,21 @@ fn tools() -> Value {
         tool("screenshot", "Capture a Teardown window (shows the scene and red script-error text). By default the multiplayer test's host window (\"TD - Host\") if there is one, else the normal game window (\"Teardown\").",
             json!({"max_width": {"type": "integer", "description": "Downscale to this width (default 1280)."},
                    "window": {"type": "string", "description": "Exact window title, e.g. \"TD - Host\", \"TD - Client1\", \"Teardown\"."}}), &[]),
-        tool("read_log", "Read the end of Teardown's log file (level loads, missing files/prefabs/sounds, disabled scripts). The game writes it in bursts, so the newest lines can lag behind. Lua runtime errors are not in it: use screenshot for those. Older sessions are in log_0.txt etc.",
+        tool("game_health", "Check the game from outside, without its scripts: each game window's process (responding or hung, CPU, memory, threads, uptime), game processes that ended since the last check with their exit code (a crash shows as access violation etc.), the game's own recent crash reports, and GPU load. Works while the game is hung, paused, in a menu or gone.",
+            json!({"window": {"type": "string", "description": "Only this window title (default: all of \"TD - Host\", \"TD - Client1\", \"Teardown\")."}}), &[]),
+        tool("crash_report", "Read one of the game's own crash reports (written to %LOCALAPPDATA%/Teardown/crash/ when it crashes): message, Lua call stack, native call stack, memory use (registry, video memory, voxels), active mods, and the end of the game log up to the crash.",
+            json!({"index": {"type": "integer", "description": "0 = newest (default)."}, "log_lines": {"type": "integer", "description": "Lines of the log to include (default 60)."}}), &[]),
+        tool("dump_game", "For a hung or very slow game: the call stacks of its main thread and busiest other threads, read from outside (each thread is paused for a moment), and optionally a minidump file for a debugger. Use game_health first to see whether it is hung.",
+            json!({"window": {"type": "string", "description": "Window title (default \"TD - Host\" if present, else \"Teardown\")."},
+                   "write_dump": {"type": "boolean", "description": "Also write a .dmp file to %LOCALAPPDATA%/Teardown/mcp_dumps (default false)."},
+                   "full": {"type": "boolean", "description": "With write_dump: all of the game's memory (gigabytes; default false: stacks and what they point to, a few MB)."},
+                   "other_threads": {"type": "integer", "description": "How many other threads to show, busiest first (default 6)."}}), &[]),
+        tool("save_game_code", "Save the running game exe's code as it is in memory (the game decrypts it at start; the file on disk is encrypted) to %LOCALAPPDATA%/Teardown/mcp_code/<exe>-<build>.exe. For tools/port_names.py, which ports engine function names to a new game build more reliably from such copies, and for disassemblers. The copy is the game's code: keep it on this machine.",
+            json!({"window": {"type": "string", "description": "Window title (default \"TD - Host\" if present, else \"Teardown\"). The multiplayer test exe and the normal game exe are different builds: save each."}}), &[]),
+        tool("perf_sample", "Measure performance over a few seconds while the game runs: frame times from inside the game (average, percentiles, frames over 33 / 50 ms), the game process's CPU and memory from outside, entity counts, and GPU load. Needs a running level. For which script costs what, open the engine profiler (see the skill).",
+            json!({"seconds": {"type": "number", "description": "Length of the sample (default 5, 1..30)."},
+                   "window": {"type": "string", "description": "\"TD - Client1\" measures the joined client's game; default the host / single-player game."}}), &[]),
+        tool("read_log", "Read the end of Teardown's log file (level loads, missing files/prefabs/sounds, disabled scripts). log.txt is written out completely only at a normal exit, so it can lag far behind the running game; log_sentry.txt is the log of the last session that crashed (written by the crash handler, with times and tags). In the multiplayer test the windows log to log_0.txt (host) and log_1.txt (client), written in 4 KB blocks. Lua runtime errors are not in it: use screenshot for those. Older sessions are in log_0.txt etc.",
             json!({"lines": {"type": "integer", "description": "Lines from the end (default 80)."}, "contains": {"type": "string", "description": "Only lines containing this text (case-insensitive)."},
                    "level": {"type": "string", "enum": ["all", "warning", "error"]}, "file": {"type": "string", "description": "Log file name (default log.txt)."}}), &[]),
     ])
@@ -308,7 +327,8 @@ impl Server {
                 for x in a["extra_mods"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                     global_mods.push(x.to_string());
                 }
-                let launch = mptest::Launch { mod_id, level, global_mods };
+                let client = a["players"].as_u64().unwrap_or(2) >= 2;
+                let launch = mptest::Launch { mod_id, level, global_mods, client };
                 mptest::start(&launch, &self.game_dir, &self.log_dir)?;
 
                 // The level is up when the bridge in the host window answers.
@@ -328,7 +348,7 @@ impl Server {
                             let mut info = unwrap_result("ping", &out.results[0]).unwrap_or(Value::Null);
                             let host_secs = started.elapsed().as_secs_f64();
                             let mut note = String::new();
-                            if a["wait_for_client"].as_bool().unwrap_or(true) {
+                            if client && a["wait_for_client"].as_bool().unwrap_or(true) {
                                 let left = total.saturating_sub(started.elapsed()).max(Duration::from_secs(30));
                                 match self.wait_players(2, left, progress) {
                                     Ok(v) => {
@@ -366,6 +386,7 @@ impl Server {
             } else {
                 "No multiplayer test was running.".into()
             })),
+            "game_health" | "crash_report" | "dump_game" | "perf_sample" | "save_game_code" => self.diag(name, a, progress),
             "send_input" => self.send_input(a),
             "screenshot" => self.screenshot(a),
             "read_log" => self.read_log(a),
@@ -395,6 +416,101 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(1000));
         }
+    }
+
+    #[cfg(windows)]
+    fn diag(&mut self, name: &str, a: &Value, progress: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
+        match name {
+            "game_health" => Ok(text(pretty(&diag::health(&self.log_dir, a["window"].as_str())))),
+            "crash_report" => {
+                let index = a["index"].as_u64().unwrap_or(0) as usize;
+                let lines = a["log_lines"].as_u64().unwrap_or(60).clamp(0, 2000) as usize;
+                Ok(text(pretty(&diag::crash_report(&self.log_dir, index, lines)?)))
+            }
+            "dump_game" => {
+                let g = self.pick_game(a["window"].as_str())?;
+                let dir = a["write_dump"].as_bool().unwrap_or(false).then(|| self.log_dir.join("mcp_dumps"));
+                let others = a["other_threads"].as_u64().unwrap_or(6).min(64) as usize;
+                Ok(text(pretty(&diag::dump(&g, dir.as_deref(), a["full"].as_bool().unwrap_or(false), others)?)))
+            }
+            "save_game_code" => {
+                let g = self.pick_game(a["window"].as_str())?;
+                Ok(text(pretty(&diag::save_code(&g, &self.log_dir.join("mcp_code"))?)))
+            }
+            _ => self.perf_sample(a, progress),
+        }
+    }
+
+    #[cfg(windows)]
+    fn pick_game(&self, window: Option<&str>) -> Result<diag::Game, String> {
+        let mut gs = diag::games(window);
+        if gs.is_empty() {
+            return Err(match window {
+                Some(w) => format!("no Teardown window titled \"{w}\""),
+                None => "no Teardown window found (\"TD - Host\", \"TD - Client1\" or \"Teardown\")".into(),
+            });
+        }
+        // Default: the host of a multiplayer test, else the normal game.
+        let i = if window.is_some() { 0 } else { gs.iter().position(|g| g.title != "TD - Client1").unwrap_or(0) };
+        Ok(gs.swap_remove(i))
+    }
+
+    #[cfg(windows)]
+    fn perf_sample(&mut self, a: &Value, progress: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
+        let secs = a["seconds"].as_f64().unwrap_or(5.0).clamp(1.0, 30.0);
+        let g = self.pick_game(a["window"].as_str())?;
+        let side = if g.title == "TD - Client1" { "remote" } else { "client" };
+        let t = Timeouts { response: self.response, scene: self.response };
+        let c0 = diag::counters(g.pid).ok_or("cannot read the game process")?;
+        let out = self.bridge.send(vec![make_cmd("perf", &json!({"side": side}), false)], &t, progress)?;
+        let r0 = unwrap_result("perf", &out.results[0])?;
+        let wall = std::time::Instant::now();
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        let since = r0["frame"].as_u64().unwrap_or(0);
+        let out = self.bridge.send(
+            vec![make_cmd("perf", &json!({"side": side, "since": since}), false), make_cmd("scene_stats", &json!({}), false)],
+            &t,
+            progress,
+        )?;
+        let r1 = unwrap_result("perf", &out.results[0])?;
+        let scene = unwrap_result("scene_stats", &out.results[1]).unwrap_or_else(|e| json!({"error": e}));
+        let wall_s = wall.elapsed().as_secs_f64();
+        let c1 = diag::counters(g.pid).ok_or("cannot read the game process")?;
+        let (core, all) = diag::cpu_between(&c0, &c1);
+        let frames = r1["frames"].as_f64().unwrap_or(0.0);
+        let sum = r1["frame_time_sum_s"].as_f64().unwrap_or(0.0);
+        let round = |x: f64, d: i32| (x * 10f64.powi(d)).round() / 10f64.powi(d);
+        let mut ft = r1.clone();
+        if let Some(o) = ft.as_object_mut() {
+            o.remove("frame");
+            o.remove("time");
+            for v in o.values_mut() {
+                if let Some(x) = v.as_f64() {
+                    *v = json!(round(x, 2));
+                }
+            }
+        }
+        Ok(text(pretty(&json!({
+            "window": g.title,
+            "fps_avg": if sum > 0.0 { round(frames / sum, 1) } else { 0.0 },
+            "frame_times": ft,
+            "game_seconds": round(r1["time"].as_f64().unwrap_or(0.0) - r0["time"].as_f64().unwrap_or(0.0), 2),
+            "wall_seconds": round(wall_s, 2),
+            "process": {
+                "cpu_percent_of_one_core": core, "cpu_percent_of_machine": all,
+                "working_set_mb": round(c1.working_set as f64 / 1048576.0, 1),
+                "private_mb": round(c1.private as f64 / 1048576.0, 1),
+                "private_change_mb": round((c1.private as f64 - c0.private as f64) / 1048576.0, 1),
+            },
+            "scene": scene,
+            "gpu": diag::gpu(),
+            "note": "Frame times are dt as client.tick sees it, one per rendered frame. game_seconds < wall_seconds means the game ran slower than real time. With the engine profiler open the frame rate is capped at 60. A single-player pause stops the count."
+        }))))
+    }
+
+    #[cfg(not(windows))]
+    fn diag(&mut self, _name: &str, _a: &Value, _p: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
+        Err("diagnostics are only available on Windows".into())
     }
 
     #[cfg(windows)]

@@ -58,7 +58,8 @@ Environment variables: `TEARDOWN_DIR` (game folder), `TEARDOWN_MCP_MOD_DIR`, `TE
 `batch`, `registry_get`, `registry_set`, `registry_clear`, `player_get`, `player_set`, `look_at`,
 `spawn`,
 `delete_entities`, `find_entities`, `describe_entity`, `raycast`, `debug_print`, `screenshot`,
-`read_log`, `send_input`, `mp_test_start`, `mp_test_stop`, `wait_for_players`. Each is described in
+`read_log`, `send_input`, `mp_test_start`, `mp_test_stop`, `wait_for_players`, `game_health`,
+`crash_report`, `dump_game`, `perf_sample`. Each is described in
 `skill/teardown-modding/references/bridge.md`.
 
 Most take `side`, where the command runs:
@@ -81,7 +82,57 @@ bridge fails cleanly.
 `mp_test_start` launches the game's local multiplayer test (host + client windows,
 `teardown_modtest.exe`) for a mod, with the bridge loaded, and waits until both players are in
 the level. `mod` is a mod id or a folder name under `Documents\Teardown\mods`; `level` picks a
-level XML other than the mod's `main.xml`.
+level XML other than the mod's `main.xml`. `players: 1` starts the host window alone: still a
+multiplayer session (`IsMultiplayer()`, server and client halves), in a normal-size window.
+
+## Diagnostics
+
+`game_health`, `crash_report` and `dump_game` work from outside the game (Win32 process APIs,
+dbghelp), so they work while the game is hung, paused or gone. `crash_report` reads the game's
+own crash reports in `%LOCALAPPDATA%\Teardown\crash\`. Engine function names come from
+per-build tables in `server/names/` (`<exe>-<PE timestamp>.tsv`), used only for exactly that
+exe and build. The first is [Teardown-PhysX](https://github.com/slopkhayzo/Teardown-PhysX)'s
+reverse-engineered table for teardown.exe 0x6ae468bd (MIT); the others are ported from it.
+
+### Keep a copy of each build's code
+
+teardown.exe's code is encrypted on disk (Steam's DRM wrapper) and decrypted by the game in
+memory at start. `save_game_code` reads the running exe's image out of memory and saves it to
+`%LOCALAPPDATA%\Teardown\mcp_code\<exe>-<PE timestamp>.exe`, laid out like the loaded image
+(section file offsets equal their addresses, ImageBase set to where it was loaded), so
+`tools/port_names.py` and disassemblers (Ghidra, IDA) can read it. It does not touch the game's
+files. The copies are the game's own code: they stay on this machine and are never committed.
+
+Save one of `teardown.exe` (normal game, window "Teardown") and one of `teardown_modtest.exe`
+(multiplayer test, "TD - Host") for every build while it is installed: after an update the old
+build cannot be run again, and porting compares code only when both sides are such copies.
+
+### After a game update
+
+The game updates without changing its version string. When `crash_report` or `dump_game` says a
+build has no name table, save the new build's code (`save_game_code` for both exes) and port the
+names (a few seconds):
+
+```
+python -I tools/port_names.py --old <crash report folder>/teardown.exe --new "<game folder>/teardown.exe" --write
+python -I tools/port_names.py --old <same old exe> --new "<game folder>/teardown_modtest.exe" --write
+```
+
+then rebuild the server. `--old` is a `save_game_code` copy of a build that has a table, or
+failing that any exe of such a build (every crash report keeps the exe that crashed); `--new` is
+the new build's copy, or its exe. With copies on both sides the tool compares the functions' code
+(call targets and data references masked out); otherwise only the function tables (.pdata: size
+and prologue shape from the unwind info), since the files on disk are encrypted. It then pairs
+changed functions that stayed in place, and carries a name over only when the alignment around it
+holds. `--expect
+OLD:NEW` checks pairs of return addresses known to match (the same crash stack in a report from
+each build); `--write` refuses when one fails. On the 0x6ae468bd to 0x6afda5ed update: 95% of
+functions aligned, 89 of 105 names ported, 8 of 8 crash-stack pairs right (function tables only:
+no copy of the old build's code existed). From teardown.exe 0x6afda5ed to teardown_modtest.exe
+0x6afda615 both ways gave the same 89 addresses; comparing code found 14 of those functions
+changed between the two exes, which the table comparison had counted as identical. `perf_sample` takes frame times from the bridge (a ring of
+`client.tick` dt values) and process counters from outside; GPU figures come from `nvidia-smi`
+when it is installed.
 
 ## The skill
 

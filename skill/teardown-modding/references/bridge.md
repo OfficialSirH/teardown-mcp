@@ -17,7 +17,7 @@ Most tools take `side` (`server` default, `client`, `draw`, `remote`): see SKILL
 
 | Tool | What it does |
 |---|---|
-| `mp_test_start` | Start the two-window multiplayer test for `mod` (id or folder name), optional `level` (XML relative to the mod folder), `restart: true` to replace a running test. Returns when host and client are both in the level |
+| `mp_test_start` | Start the two-window multiplayer test for `mod` (id or folder name), optional `level` (XML relative to the mod folder), `restart: true` to replace a running test, `players: 1` for the host window alone (still a multiplayer session: two script halves, multiplayer rules; normal-size window, starts in about 13 s). Returns when the players are in the level |
 | `mp_test_stop` | Close the test windows |
 | `wait_for_players` | Wait until `count` players are in with their scripts running. Use it after anything that makes a client rejoin or reload, instead of reading logs |
 | `ping` | Is the game answering; level path, players (server side: `ready` per player) |
@@ -36,7 +36,12 @@ Most tools take `side` (`server` default, `client`, `draw`, `remote`): see SKILL
 | `raycast` | From `origin` along `dir`, or from the player's camera |
 | `debug_print` | A line in the game's on-screen console |
 | `screenshot` | A game window: `window` is "TD - Host" (default when present), "TD - Client1" or "Teardown" |
-| `read_log` | End of a log file; `file` is `log.txt` (normal game), `log_0.txt` (test host), `log_1.txt` (test client); `level: error`, `contains` |
+| `read_log` | End of a log file; `file` is `log.txt` (normal game, complete only after a normal exit), `log_0.txt` (test host), `log_1.txt` (test client), `log_sentry.txt` (the last crashed session); `level: error`, `contains` |
+| `game_health` | From outside the game: each game window's process (responding or hung, CPU, memory, threads), processes that ended since the last check with their exit code, the game's recent crash reports, GPU load. Works when the game is hung, paused, in a menu or gone |
+| `crash_report` | One of the game's own crash reports (`index` 0 = newest): message, Lua stack, native stack with function names where known, memory, the log up to the crash |
+| `dump_game` | Call stacks of a hung or slow game's main thread and busiest threads; `write_dump: true` adds a minidump file |
+| `save_game_code` | The running exe's decrypted code to `%LOCALAPPDATA%/Teardown/mcp_code/` (for `tools/port_names.py` and disassemblers; stays on this machine). Save one per build of each exe |
+| `perf_sample` | Over `seconds` (default 5): frame times from inside the game (avg, p50/p95/p99, frames over 33 / 50 ms), CPU and memory of the process, entity counts, GPU load |
 | `game_command` | `Command(...)`, e.g. `game.quicksave` |
 | `start_level` | `StartLevel`. Risky: a path the engine cannot load drops to the main menu |
 
@@ -126,6 +131,30 @@ send_input { "actions": [
 - Use registry switches (see authoring.md) when the point is the mod's logic, and
   `send_input` when the point is the input path itself (`InputPressed`, UI hit-testing,
   driving feel).
+
+**It crashed, hung or got slow.**
+
+```
+game_health  {}                         alive? responding? exit code? new crash reports?
+crash_report {}                         the newest crash: message, Lua stack, native stack, log tail
+dump_game    {}                         hung: where the main thread is stuck
+perf_sample  { "seconds": 5 }           slow: frame times, CPU, memory, entity counts
+```
+
+- A Lua error never crashes the game (it shows as red text). A crash with `lua_callstack`
+  entries points at a script; an empty one is native. Native frames named
+  `PhysicsUpdate`, `Destr*`, `Split*`, `Vox*` mean physics or destruction: look at what the mod
+  spawns, breaks or moves in that moment (too many bodies, huge shapes, joints).
+- `crash_report` and `dump_game` name engine functions only when there is a table for exactly
+  that exe and build (`names_table` says where it came from); otherwise they give function
+  starts, still enough to see whether two crashes of one build are the same. "name ported to
+  changed code" means the function changed in that update: the name is likely, the offset in it
+  is not comparable to other builds.
+- To find which script costs the frame time, open the engine profiler (below) and read the
+  per-script graphs; `perf_sample` before and after a change tells whether it helped.
+- `dump_game` pauses each thread it reads for a moment. A main thread in the graphics driver
+  is rendering; one waiting (`NtWaitFor...`) is waiting for worker threads; one in teardown.exe
+  frames is computing (physics, scripts).
 
 **Longer experiments.** Write a `.lua` file that returns a string or table and pass it as
 `file`. Results over about 240 000 characters are refused; return less.

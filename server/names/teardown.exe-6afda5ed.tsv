@@ -1,0 +1,90 @@
+# teardown.exe build 0x6afda5ed: ported from teardown.exe-6ae468bd.tsv by tools/port_names.py on 2026-11-20 (89 of 105 names; aligned runs >= 4)
+0x02e510	BodyUpdateShapes	same
+0x02ead0	SplitNewBodyUpdate	changed (same prologue)
+0x0318c0	SplitBodyOp	same
+0x06cba0	LevelDescCtor	same
+0x072560	FrameUpdate	same
+0x07a3d0	StateSwitch	same
+0x07ac60	StartLevel	same
+0x07caf0	GameTick	same
+0x0aeac0	FrameDriver	same
+0x0b4fc0	JobBroadPhase	same
+0x0b51c0	JobNearPhaseAdd	same
+0x0b51e0	JobNearPhaseCollect	same
+0x0b52f0	NarrowWake	same
+0x0b87c0	ShapeTouchTest	same
+0x0b95e0	TreeUpdateShape	same
+0x0b9760	PhysicsUpdate	changed (same prologue)
+0x0bbf20	PhysicsCollide	changed (same prologue)
+0x0bca70	SoundListMerge	changed (same prologue)
+0x0bd170	PhysicsBodiesUpdate	same
+0x0bd290	PhysicsBodyUpdate	same
+0x0bebb0	BodyDtor	same
+0x0c1ab0	SplitIslands	same
+0x0c4440	PlayerConstraints	changed (same prologue)
+0x0c96d0	PlayerSetTransform	same
+0x0dc480	SceneQueryShapes	same
+0x0dce10	JobCollisionData	same
+0x0dcee0	JobPaintSlices	same
+0x0dd1f0	JobShapeInterp	same
+0x0e32f0	ScenePointInWater	same
+0x0e62d0	SceneShapesChanged	same
+0x0e6700	PaintScene	same
+0x0f9bc0	SceneUpdate	same
+0x10d000	VoxWholeA	same
+0x10d7c0	VoxWholeB	same
+0x113550	VoxBoundsScan	same
+0x113980	VoxRegionUpdate	same
+0x113c00	VoxRegionFinish	same
+0x1381d0	SplitJobs	same
+0x13b010	SplitCollect	same
+0x13b0d0	SplitBreakageJobs	same
+0x13cd00	Destr_53a0	same
+0x13d7c0	JobBreakage	same
+0x13dc80	DestrMTUpdate	same
+0x13f6c0	MakeHoleCore	changed (same place)
+0x13fbc0	MakeHole	changed (same place)
+0x13ff10	SplitPerBody	same
+0x1404c0	SplitGroupBodies	same
+0x140880	SplitFlood	same
+0x140cc0	DestrGather	same
+0x1416e0	DestrCarve	same
+0x141b60	DestrFinish	same
+0x1429c0	Destr_b060	same
+0x143a60	Destr_c100	same
+0x1447b0	BreakageDriver	same
+0x145300	SplitEntryFinish	same
+0x1457b0	Destr_de30	same
+0x145df0	BreakIslands	same
+0x146090	BreakIslandsMT	same
+0x146d20	SplitWait	changed (same place)
+0x167ac0	FireUpdate	changed (same place)
+0x400b00	ModById	same
+0x46f510	PathResolveLevel	same
+0x48bf20	LuaIsBodyActive	same
+0x490d00	LuaPaint	same
+0x4b7b50	ScriptsUpdate	same
+0x4e9e10	ShapeCtor	same
+0x4ea020	ShapeDtor	same
+0x4ea130	ShapeUpdateBounds	same
+0x4ea970	ShapeWorldTransform	same
+0x4eaaf0	ShapeInterpTransform	same
+0x5042c0	WndProc	same
+0x507090	MessagePump	same
+0x50e500	JobRelease	same
+0x511be0	SeedFromTime	same
+0x511e60	EngineAlloc	same
+0x511ef0	EngineFree	same
+0x513d80	TdStringFromCStr	same
+0x513ef0	TdStringDtor	same
+0x513f40	TdStringCopy	same
+0x51d7f0	MutexLock	same
+0x51eb50	TimerElapsed	same
+0x606db0	JobSolver	same
+0x607370	SolverIslands	same
+0x60aec0	SolverAddBody	same
+0x63f830	LuaPushBool	same
+0x691ab0	JobCclRelabel	same
+0x695280	VoxFullRelabel	same
+0x6953f0	VoxRegionCcl	same
+0x6a89a0	GameLog	same

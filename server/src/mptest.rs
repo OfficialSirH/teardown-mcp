@@ -15,6 +15,8 @@ pub struct Launch {
     pub mod_id: String,
     pub level: String,
     pub global_mods: Vec<String>,
+    /// Also start the client window (false: the host plays alone, still a multiplayer session).
+    pub client: bool,
 }
 
 /// Mod id the way the game derives it from a folder name: lower case, anything that is
@@ -177,14 +179,19 @@ pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<(), String> 
             .map(|_| ())
             .map_err(|e| format!("cannot start {}: {e}", exe.display()))
     };
-    let mut host: Vec<String> = ["-half_screen", "1", "-mod_test_host", &l.mod_id, &l.level, "", ""]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    // Alone, the host gets a normal window instead of the left half of the screen.
+    let mut host: Vec<String> = Vec::new();
+    if l.client {
+        host.extend(["-half_screen".to_string(), "1".to_string()]);
+    }
+    host.extend(["-mod_test_host", &l.mod_id, &l.level, "", ""].iter().map(|s| s.to_string()));
     host.extend(l.global_mods.iter().cloned());
     host.push("-logfile".into());
     host.push(fwd(&appdata.join("log_0.txt")));
     spawn(host)?;
+    if !l.client {
+        return Ok(());
+    }
     spawn(
         ["-half_screen", "2", "-mod_test_client", "-logfile", &fwd(&appdata.join("log_1.txt"))]
             .iter()

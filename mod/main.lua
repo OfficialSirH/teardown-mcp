@@ -443,6 +443,61 @@ function A.debug_print(a)
 end
 
 -- Actions that tear the scene down: acknowledged before they run.
+-- Frame times for perf_sample: client.tick runs once per rendered frame, dt = that frame's time.
+local FRING = 4096
+local fN, fDt = 0, {}
+
+function A.perf(a, side)
+	if side == "server" or side == "draw" then error("perf runs on side client (or remote)") end
+	local r = { frame = fN, time = GetTime() }
+	if a.since then
+		local n = math.min(fN - a.since, FRING)
+		local v, sum = {}, 0
+		for i = fN - n + 1, fN do
+			local x = fDt[i % FRING] or 0
+			v[#v + 1] = x
+			sum = sum + x
+		end
+		table.sort(v)
+		local function q(p) return v[math.max(1, math.ceil(#v * p))] * 1000 end
+		r.frames = #v
+		if #v > 0 then
+			local over33, over50 = 0, 0
+			for _, x in ipairs(v) do
+				if x > 1 / 30 then over33 = over33 + 1 end
+				if x > 0.05 then over50 = over50 + 1 end
+			end
+			r.frame_time_sum_s = sum
+			r.dt_avg_ms = sum / #v * 1000
+			r.dt_min_ms = v[1] * 1000
+			r.dt_p50_ms = q(0.5)
+			r.dt_p95_ms = q(0.95)
+			r.dt_p99_ms = q(0.99)
+			r.dt_max_ms = v[#v] * 1000
+			r.frames_over_33ms = over33
+			r.frames_over_50ms = over50
+		end
+	end
+	return r
+end
+
+function A.scene_stats()
+	local bodies = FindBodies("", true)
+	local active, dynamic, broken = 0, 0, 0
+	for i = 1, #bodies do
+		local b = bodies[i]
+		if IsBodyActive(b) then active = active + 1 end
+		if IsBodyDynamic(b) then dynamic = dynamic + 1 end
+		if IsBodyBroken(b) then broken = broken + 1 end
+	end
+	return {
+		bodies = #bodies, active_bodies = active, dynamic_bodies = dynamic, broken_bodies = broken,
+		shapes = #FindShapes("", true), vehicles = #FindVehicles("", true), lights = #FindLights("", true),
+		joints = #FindJoints("", true), triggers = #FindTriggers("", true),
+		registry_level_keys = #ListKeys("level"),
+	}
+end
+
 local RELOADS = { restart = true, start_level = true }
 
 ---------------------------------------------------------------------------
@@ -614,6 +669,8 @@ end
 local reported = false
 
 function client.tick(dt)
+	fN = fN + 1
+	fDt[fN % FRING] = dt
 	if not reported then
 		reported = true
 		ServerCall("server.mcpReady", GetLocalPlayer())
