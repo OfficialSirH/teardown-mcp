@@ -3,6 +3,11 @@
     "teardown": {
       "command": "C:\\Projects\\Teardown-MCP\\server\\target\\release\\teardown-mcp.exe",
       "args": []
+    },
+    "blender": {
+      "command": "cmd",
+      "args": ["/c", "uvx", "mcp-for-blender"],
+      "env": { "DISABLE_TELEMETRY": "true" }
     }
   }
 }

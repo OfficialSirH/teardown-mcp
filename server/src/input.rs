@@ -2,6 +2,13 @@
 //!
 //! The window is brought to the front, events are sent only while it really is the foreground
 //! window, and the previous foreground window gets focus back afterwards.
+//!
+//! After a focus change the game resets its input state when it notices the change, which can
+//! be a frame or more later. A mouse button pressed before that was wiped: a 1 s hold sent as
+//! the first action sometimes never reached InputDown("usetool") (2026-11-20, multiplayer test
+//! host), while the same hold after 300 ms more always did. So after taking focus we wait
+//! FOCUS_SETTLE_MS, and the first button press is preceded by a 1-pixel mouse nudge and a short
+//! wait.
 
 #![allow(non_snake_case)]
 
@@ -150,6 +157,10 @@ unsafe fn focus(hwnd: HANDLE) -> bool {
     GetForegroundWindow() == hwnd
 }
 
+/// Wait after the window had to be brought to the front (it already was: SETTLE_MS).
+const FOCUS_SETTLE_MS: u64 = 400;
+const SETTLE_MS: u64 = 60;
+
 fn sleep_ms(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
 }
@@ -176,10 +187,22 @@ pub fn send(actions: &[Value], window: Option<&str>, restore: bool) -> Result<St
             return Err("the game window is minimized".into());
         }
         let previous = GetForegroundWindow();
+        let already = previous == hwnd;
         if !focus(hwnd) {
             return Err("could not bring the game window to the front; no input was sent".into());
         }
-        sleep_ms(150);
+        sleep_ms(if already { SETTLE_MS } else { FOCUS_SETTLE_MS });
+        let mut primed = already;
+        // Before the first mouse button press of a call: a harmless 1-pixel nudge the game has to
+        // process, then a short wait (see the module comment).
+        let prime = |primed: &mut bool| {
+            if !*primed {
+                mouse(0x0001, 1, 0, 0);
+                mouse(0x0001, -1, 0, 0);
+                sleep_ms(80);
+                *primed = true;
+            }
+        };
 
         let mut rc = RECT::default();
         GetClientRect(hwnd, &mut rc);
@@ -227,6 +250,7 @@ pub fn send(actions: &[Value], window: Option<&str>, restore: bool) -> Result<St
                     "middle" => (0x0020, 0x0040),
                     _ => (0x0002, 0x0004),
                 };
+                prime(&mut primed);
                 mouse(down, 0, 0, 0);
                 sleep_ms(hold);
                 mouse(up, 0, 0, 0);
@@ -246,6 +270,7 @@ pub fn send(actions: &[Value], window: Option<&str>, restore: bool) -> Result<St
                 mouse(0x0001, 1, 0, 0);
                 mouse(0x0001, -1, 0, 0);
                 sleep_ms(80);
+                prime(&mut primed);
                 mouse(0x0002, 0, 0, 0);
                 sleep_ms(60);
                 let steps = 12;

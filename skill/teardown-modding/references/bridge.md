@@ -25,7 +25,7 @@ Most tools take `side` (`server` default, `client`, `draw`, `remote`): see SKILL
 | `reload_scene` | Restart the level and wait for the new scene. `side: client` if the server half is dead. `timeout_secs` default 1800 |
 | `run_lua` | Run `code`, or a Lua `file` by absolute path. Returns return values and `print` output. An expression works: `GetPlayerHealth()` |
 | `call_api` | Call one API function by name with JSON arguments |
-| `batch` | Several actions in one round trip; commands after a `restart` run in the new scene |
+| `batch` | Several actions in one round trip; commands after a `restart` run in the new scene. All other actions in a batch run in the **same game tick**: a `run_lua` "wait" between them lets no time pass, so to see physics or timers move, use separate calls |
 | `registry_get` / `registry_set` / `registry_clear` | Read a key with its children (`depth`), write (`type`, `sync`), delete |
 | `player_get` / `player_set` | Transform, camera, velocity, health, vehicle, tool; teleport / velocity / health |
 | `look_at` | Teleport a player next to a `target` (position or entity handle) facing it, offset `from` (default `[-5, 2, 5]`). Use before `screenshot`. Server side |
@@ -115,6 +115,15 @@ send_input { "actions": [
 - It brings the game window to the front and the user loses keyboard focus meanwhile; it sends
   nothing if the window does not get focus. Pass `restore_focus: false` between consecutive
   calls so the window does not flip back and forth, and leave it at the default on the last.
+- **The first click after the window comes to the front could be lost** (2026-11-20, the
+  multiplayer test's host window, several times, intermittent): a 1-second hold sent as the
+  first action of a call never reached `InputDown("usetool")`, while the same hold after a
+  throwaway `{ "click": "left", "hold_ms": 40 }, { "wait_ms": 300 }` always did. Likely cause:
+  the game resets input when it notices the focus change, wiping a press that came first.
+  The server now waits 400 ms after taking focus and nudges the mouse one pixel before the
+  first button press; 5 of 5 single first clicks fired after that (the fault was not
+  reproducible on demand, so this is not proof). If a first click still goes missing, the
+  throwaway click above is the fallback.
 - In a vehicle: `w` / `s` drive, `a` / `d` steer, `e` gets in and out.
 - `esc` opens the pause menu. In single-player scripts stop there; in the multiplayer test
   they keep running. A second `esc` or a click on Continue closes it; `screenshot` shows which.

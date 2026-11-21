@@ -90,6 +90,17 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
   "the local player" in client code.
 - **Testing multiplayer:** the multiplayer test compares each mod's files between host and
   client at start. Anything that changes a mod folder while it starts gets the client kicked.
+- **Two ways to crash the game outright:** a script deleting its own entity inside its own
+  callback, and `Constrain*` called from `server.tick` instead of `server.update`.
+- **No API calls at a script's top level** (while the file loads): only inside callbacks.
+- **`Spawn` spawns only the first root element** of a prefab or XML string, and joints only
+  attach to shapes from the same `Spawn` call unless `jointExisting` is true (which can also
+  make them pick the wrong pair of shapes).
+- **Dynamic bodies below about y = -20 freeze in mid-air** (put to sleep every step). Build
+  anything with physics above that.
+- **A `<vox>` without `pos` is centred on its body origin**, height included: a model built
+  standing on z = 0 hangs half its height below the origin.
+- **`server.postUpdate` / `client.postUpdate`** run once per physics step, after it.
 
 The full list, with how each was measured, is in `references/quirks.md`. Read it before
 designing anything that crosses the server/client line, and add to it when you measure

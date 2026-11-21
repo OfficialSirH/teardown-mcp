@@ -1,4 +1,5 @@
 server/target/
+server/target-test/
 savegame-backup-*.xml
 mod/mcp_config.lua
 tools/probe/*.json
