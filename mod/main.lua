@@ -18,6 +18,8 @@
 --   mcp_scene     counts scenes started; the server waits for it to grow
 --   mcp_level     level path of the running scene
 --   mcp_log       1 if the server also wants results in the game's log file
+--   mcp_paused    1 while the single-player pause menu is open (polling then runs from
+--                 client.render, client commands only)
 
 local P = "savegame.mod.mcp_"
 local INBOX = MCP_INBOX
@@ -256,6 +258,12 @@ function A.ping(a, side)
 		time = GetTime(),
 		multiplayer = try(IsMultiplayer),
 		scene = GetInt(P .. "scene"),
+		-- "PLAY" in a level. game.paused is true while a pause menu is open, also in the
+		-- multiplayer test (where nothing stops); paused_sp: the single-player pause, where
+		-- only side=client commands run.
+		state = GetString("game.state"),
+		paused = GetBool("game.paused"),
+		paused_sp = GetInt(P .. "paused") == 1,
 	}
 end
 
@@ -335,9 +343,21 @@ function A.registry_clear(a)
 	ClearKey(a.key)
 end
 
+-- game.player.*: the engine's view of this game's local player (can grab / interact / use a
+-- tool, grabbing, input disabled, character, current tool and zoom...). Values as strings.
+local function localPlayerState()
+	local s = {}
+	for _, k in ipairs(ListKeys("game.player") or {}) do
+		s[k] = GetString("game.player." .. k)
+	end
+	return s
+end
+
 function A.player_get(a)
 	local p = a.player or 0
+	local isLocal = p == 0 or p == try(GetLocalPlayer)
 	return {
+		local_state = isLocal and localPlayerState() or nil,
 		player = p,
 		name = try(GetPlayerName, p),
 		transform = GetPlayerTransform(p),
@@ -551,10 +571,14 @@ end
 local lastDone = -1
 local pendingReload = nil
 
+local PAUSED_MSG = "the game is paused (single-player pause menu): only side=client commands run there, from client.render. Resume first with run_lua side=client \"SetPaused(false)\" (or send_input: a click on Continue), or run this with side=client."
+
 -- side: "server" / "client" (the host's two halves), "draw" (the host's client.draw, the only
 -- place Ui* functions exist), "remote" (a joined client's game; local multiplayer test only,
 -- where it can read the same command file and answers through its own log file).
-local function pump(side)
+-- paused: called from client.render while the single-player pause menu stops every other
+-- callback; commands for the other sides are answered with an error instead of waiting.
+local function pump(side, paused)
 	if not INBOX then return end -- no path in mcp_config.lua
 	installGuards(side)
 	local f = loadfile(INBOX)
@@ -608,7 +632,9 @@ local function pump(side)
 				SetInt(P .. "ack", ack)
 			end
 		elseif cside ~= side then
-			return -- the host's other half goes first
+			if not paused then return end -- the host's other half goes first
+			writeResult(cmd.id, { ok = false, error = PAUSED_MSG })
+			ack = cmd.id
 		else
 			local h = A[cmd.action]
 			local args = cmd.args or {}
@@ -667,8 +693,16 @@ function server.mcpReady(p)
 end
 
 local reported = false
+-- pausedFlag starts true so the first tick clears a stale mcp_paused loaded from the savegame
+-- (a game quit from the pause menu saves it as 1).
+local cTicks, ticksAtRender, idleRenders, rTimer, pausedFlag = 0, -1, 0, 0, true
 
 function client.tick(dt)
+	cTicks = cTicks + 1
+	if pausedFlag then
+		pausedFlag = false
+		SetInt(P .. "paused", 0)
+	end
 	fN = fN + 1
 	fDt[fN % FRING] = dt
 	if not reported then
@@ -681,6 +715,30 @@ function client.tick(dt)
 	-- The host's game runs "client" commands; a joined client's game only "remote" ones.
 	pump(IsPlayerHost(GetLocalPlayer()) and "client" or "remote")
 	relayToLog()
+end
+
+-- The single-player pause menu stops tick, update and draw, but client.render keeps running
+-- (measured, quirks.md section 11). Poll from here only once renders keep coming with no tick
+-- in between: during normal play and in the multiplayer test (which never pauses) every frame
+-- has a tick, so this never fires there and the polling above is unchanged.
+local PAUSE_RENDERS = 30
+
+function client.render(dt)
+	if cTicks ~= ticksAtRender then
+		ticksAtRender = cTicks
+		idleRenders = 0
+		return
+	end
+	idleRenders = idleRenders + 1
+	if idleRenders < PAUSE_RENDERS then return end
+	if not pausedFlag then
+		pausedFlag = true
+		SetInt(P .. "paused", 1)
+	end
+	rTimer = rTimer + math.max(dt or 0, 1 / 240)
+	if rTimer < POLL then return end
+	rTimer = 0
+	if IsPlayerHost(GetLocalPlayer()) then pump("client", true) end
 end
 
 local dFrames = 0

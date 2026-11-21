@@ -52,6 +52,30 @@ pub struct Bridge {
     /// stops that half of the calling script, which is the usual reason a half goes quiet.
     pub last_side_error: Option<String>,
     side_re: Regex,
+    /// Checks from outside that a game is there to answer (window open, not hung). Run before
+    /// sending when the game has not answered for ALIVE_RECHECK, so a session that comes back
+    /// hours later learns at once that the game was closed instead of waiting for a timeout.
+    pub alive_check: fn() -> Result<(), String>,
+    /// When the game last answered or the outside check last passed; None: check first.
+    last_alive: Option<Instant>,
+    /// When the game last really answered (for the message).
+    last_answer: Option<Instant>,
+}
+
+/// After this long without an answer from the game, check it is still there before sending.
+const ALIVE_RECHECK: Duration = Duration::from_secs(300);
+
+fn ago(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 120 {
+        format!("{s} s")
+    } else if s < 7200 {
+        format!("{} min", s / 60)
+    } else if s < 172800 {
+        format!("{} h {} min", s / 3600, s % 3600 / 60)
+    } else {
+        format!("{} days", s / 86400)
+    }
 }
 
 pub type State = HashMap<String, String>;
@@ -149,6 +173,9 @@ impl Bridge {
             log_offsets: HashMap::new(),
             log_state: State::new(),
             last_side_error: None,
+            alive_check: || Ok(()),
+            last_alive: None,
+            last_answer: None,
             side_re: Regex::new(r"(\S+: )?(\w+) is not available in (client|server) script").unwrap(),
             mod_dir,
             savegame,
@@ -313,6 +340,12 @@ impl Bridge {
         serde_json::from_str(&pct_decode(&s)).ok()
     }
 
+    /// Forget that the game answered: the next command checks the game windows first (after
+    /// the multiplayer test was stopped), or count it as checked (right after starting one).
+    pub fn set_alive(&mut self, alive: bool) {
+        self.last_alive = alive.then(Instant::now);
+    }
+
     /// Run commands in order and wait for their results.
     pub fn send(
         &mut self,
@@ -324,6 +357,18 @@ impl Bridge {
             return Err("no commands".into());
         }
         self.install()?;
+        if self.last_alive.is_none_or(|t| t.elapsed() > ALIVE_RECHECK) {
+            if let Err(e) = (self.alive_check)() {
+                let when = match self.last_answer {
+                    Some(t) => format!("the game last answered {} ago", ago(t.elapsed())),
+                    None => "this server has not reached the game yet".to_string(),
+                };
+                return Err(format!(
+                    "{e}. Nothing was sent: the server looks at the game windows before the first command after 5 minutes without an answer, a failed call or mp_test_stop ({when})."
+                ));
+            }
+            self.last_alive = Some(Instant::now());
+        }
         self.log_mode = (self.detect_log)();
         let scene0 = self.read_state().map(|s| int(&s, "scene")).unwrap_or(0);
 
@@ -392,6 +437,8 @@ impl Bridge {
                     if let Some(results) = results {
                         self.done = last_id;
                         self.pending.clear();
+                        self.last_alive = Some(Instant::now());
+                        self.last_answer = self.last_alive;
                         let _ = self.write_inbox();
                         let level = st.get("level").cloned().unwrap_or_default();
                         return Ok(Outcome { results, scene_wait, level });
@@ -411,7 +458,7 @@ impl Bridge {
                     )
                 } else if !ours {
                     format!(
-                        "no answer from the game within {} s. Teardown must be running inside a level (not the main menu) with the \"MCP Bridge\" mod enabled ({}). The bridge does not run while a single-player game is paused or in a menu. Take a screenshot: from the pause menu, send_input can click Continue; otherwise ask the user.",
+                        "no answer from the game within {} s. Teardown must be running inside a level (not the main menu) with the \"MCP Bridge\" mod enabled ({}). The bridge does not run in a menu; in the single-player pause menu it answers side=client commands only (an older copy of the bridge mod answers nothing there). Take a screenshot: from the pause menu, run_lua side=client with SetPaused(false) or a send_input click on Continue resumes; otherwise ask the user.",
                         limit.as_secs(),
                         if self.log_mode {
                             "multiplayer test window found: expecting replies in its log file"
@@ -421,7 +468,7 @@ impl Bridge {
                     )
                 } else {
                     format!(
-                        "the game stopped answering for {} s (acknowledged up to command {} of {}..={}; the game is probably paused or back in the main menu; screenshot shows it, and send_input can click Continue in the pause menu). Partial results: {}",
+                        "the game stopped answering for {} s (acknowledged up to command {} of {}..={}; the game is probably back in the main menu, or paused with an older bridge mod; screenshot shows it, and in the pause menu run_lua side=client with SetPaused(false) or a send_input click on Continue resumes). Partial results: {}",
                         limit.as_secs(),
                         last_ack,
                         ids[0],
@@ -440,6 +487,12 @@ impl Bridge {
             }
         };
 
+        // Say at once if the game is gone or hung, and check again before the next command.
+        let failure = match (self.alive_check)() {
+            Err(e) => format!("{e}. ({failure})"),
+            Ok(()) => failure,
+        };
+        self.last_alive = None;
         let failure = match &self.last_side_error {
             Some(line) => format!(
                 "{failure}\nThe game's log has: \"{line}\". A call on the wrong side makes the engine stop that half of the calling script until the level reloads; if that was the bridge, reload the level from the other half (reload_scene with side=client or side=server) or restart the multiplayer test."

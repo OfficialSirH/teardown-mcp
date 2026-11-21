@@ -17,17 +17,18 @@ Most tools take `side` (`server` default, `client`, `draw`, `remote`): see SKILL
 
 | Tool | What it does |
 |---|---|
-| `mp_test_start` | Start the two-window multiplayer test for `mod` (id or folder name), optional `level` (XML relative to the mod folder), `restart: true` to replace a running test, `players: 1` for the host window alone (still a multiplayer session: two script halves, multiplayer rules; normal-size window, starts in about 13 s). Returns when the players are in the level |
+| `mp_test_join` / `mp_test_stop` `client_only` | A late join: start the client window alone to join a running host (e.g. one started with `players: 1`), waiting until its player is in (about 10 s); close only the client window, so its player leaves. A rejoining player gets a new id (3, 4, ...) |
+| `mp_test_start` | Start the two-window multiplayer test for `mod` (id or folder name), optional `level` (XML relative to the mod folder), `restart: true` to replace a running test, `players: 1` for the host window alone (still a multiplayer session: two script halves, multiplayer rules; normal-size window, starts in about 13 s), `game_mode` to start a game mode: a content mode (`"local-my-mod.my-mode"`; its `layers` are read from the mod's `gamemodes.txt` unless given), a global one with its mod in `extra_mods` (`"builtin-mpclassics.deathmatch"`, `["builtin-mpclassics"]`; the mod need not be enabled); authoring.md section 13. Returns when the players are in the level |
 | `mp_test_stop` | Close the test windows |
 | `wait_for_players` | Wait until `count` players are in with their scripts running. Use it after anything that makes a client rejoin or reload, instead of reading logs |
-| `ping` | Is the game answering; level path, players (server side: `ready` per player) |
+| `ping` | Is the game answering; level path, players (server side: `ready` per player), `state` ("PLAY"), `paused` (a pause menu is open), `paused_sp` (single-player pause: only `side: client` runs) |
 | `bridge_status` | File paths and saved bridge state, without talking to the game |
 | `reload_scene` | Restart the level and wait for the new scene. `side: client` if the server half is dead. `timeout_secs` default 1800 |
 | `run_lua` | Run `code`, or a Lua `file` by absolute path. Returns return values and `print` output. An expression works: `GetPlayerHealth()` |
 | `call_api` | Call one API function by name with JSON arguments |
 | `batch` | Several actions in one round trip; commands after a `restart` run in the new scene. All other actions in a batch run in the **same game tick**: a `run_lua` "wait" between them lets no time pass, so to see physics or timers move, use separate calls |
 | `registry_get` / `registry_set` / `registry_clear` | Read a key with its children (`depth`), write (`type`, `sync`), delete |
-| `player_get` / `player_set` | Transform, camera, velocity, health, vehicle, tool; teleport / velocity / health |
+| `player_get` / `player_set` | Transform, camera, velocity, health, vehicle, tool, and for the game's local player `local_state` (the engine's `game.player.*`: `canusetool`, `cangrab`, `caninteract`, `grabbing`, `disableinput`, `usevehicle`, ...); teleport / velocity / health |
 | `look_at` | Teleport a player next to a `target` (position or entity handle) facing it, offset `from` (default `[-5, 2, 5]`). Use before `screenshot`. Server side |
 | `send_input` | Real key presses, clicks, drags and mouse movement in the game window: play as a player would. Takes window focus while it runs |
 | `find_entities` | By `tag` and/or `type` (body, shape, vehicle, light, location, joint, trigger, screen) |
@@ -124,9 +125,18 @@ send_input { "actions": [
   first button press; 5 of 5 single first clicks fired after that (the fault was not
   reproducible on demand, so this is not proof). If a first click still goes missing, the
   throwaway click above is the fallback.
+- **Game actions by name:** `{ "action": "interact" }` (or `usetool`, `grab`, `jump`, `crouch`,
+  `flashlight`, `map`, `vehicle_raise`, ...) presses whatever the player has bound to it, read
+  from `game.input.<action>` in that window's game; the reply names the binding used. Prefer it
+  to fixed keys: a rebound key then still works. An unbound action fails with the list of bound
+  ones. (Verified 2026-11-21: `flashlight` resolved to `f` and toggled the light.)
+- When an input test does nothing, `player_get` (`side: client`) `local_state` tells whether
+  the engine lets the player act: `canusetool`, `caninteract`, `cangrab`, `disableinput`.
 - In a vehicle: `w` / `s` drive, `a` / `d` steer, `e` gets in and out.
-- `esc` opens the pause menu. In single-player scripts stop there; in the multiplayer test
-  they keep running. A second `esc` or a click on Continue closes it; `screenshot` shows which.
+- `esc` opens the pause menu. In single-player scripts stop there except `client.render`, so
+  only `side: client` commands answer; in the multiplayer test everything keeps running. A
+  second `esc`, a click on Continue, or `run_lua` `side: client` `SetPaused(false)` closes it;
+  `screenshot` shows which.
 - Key combos: join names with `+`, pressed in order and released in reverse.
 - **The engine profiler** (CPU per system and per Lua script, per-callback graphs, a log
   viewer and a live registry viewer): `{ "key": "shift+alt+f3" }` opens, `{ "key": "f3" }`
@@ -176,9 +186,12 @@ or registry is then missing; write it with `registry_set` first if the level nee
 
 | Message | Meaning | Do |
 |---|---|---|
+| `Teardown is not running: no game window ... Nothing was sent` | The server looked before sending and found no game | Ask the user to start the game, or `mp_test_start`. Do not retry the same call |
+| `the game window "..." is not responding` | The game is hung (Windows' view) | `game_health`, `dump_game` |
 | `X is not available in client script. The bridge blocked the call...` | Wrong side; nothing ran | Repeat with the side it names |
-| `no answer from the game within 20 s` | No level running, paused, in a menu, mod not enabled, or that bridge half was stopped | `screenshot`. If a log line is quoted, a wrong-side call stopped that half: `reload_scene` with the other `side`, or `mp_test_start` with `restart: true`. If the screenshot shows the pause menu, `send_input` a click on Continue; in the main menu, ask the user |
+| `no answer from the game within 20 s` | No level running, in a menu, mod not enabled, or that bridge half was stopped (or paused with a bridge mod older than 2026-11-21) | `screenshot`. If a log line is quoted, a wrong-side call stopped that half: `reload_scene` with the other `side`, or `mp_test_start` with `restart: true`. If the screenshot shows the pause menu, `send_input` a click on Continue; in the main menu, ask the user |
 | `the game stopped answering ...` | Same, after some commands had run | Same |
+| `the game is paused (single-player pause menu) ...` | A non-client command reached a paused single-player game | `run_lua` `side: client` with `SetPaused(false)`, then repeat; or run it with `side: client` |
 | `the command ended the script callback without returning` | The call ended the callback in a way `pcall` cannot catch; it was not retried | Split the code to find the call; note it in quirks.md |
 | `the scene did not report back within N s` | The reload did not finish in time or the level failed to load | `screenshot`, `read_log`; raise `timeout_secs` for heavy mods |
 | `a multiplayer test is already running` | | `restart: true`, or use the running one |
@@ -187,8 +200,15 @@ or registry is then missing; write it with `registry_set` first if the level nee
 
 ## 4. Limits
 
-- The bridge's Lua side runs only inside a level. In the single-player pause menu or the main
-  menu only `screenshot` and `send_input` still work (they do not go through the game's scripts).
+- The bridge's Lua side runs only inside a level. In the main menu only `screenshot` and
+  `send_input` still work (they do not go through the game's scripts). In the single-player
+  pause menu `side: client` commands work too (from `client.render`); the other sides answer
+  with a "paused" error. While paused it sets `savegame.mod.mcp_paused` to 1.
+- The server checks that a game window is open and responding (from outside, in a few
+  milliseconds) before the first command after 5 minutes without an answer, after a failed
+  call and after `mp_test_stop`; a closed or hung game is then reported at once and nothing is
+  sent. It cannot tell from outside whether the open game is in a level or in the main menu:
+  that still shows as the 20 s timeout.
 - One MCP session at a time should send commands; two at once can interfere.
 - `remote` exists only in the local multiplayer test (the client's game reads the same file
   on the same PC).

@@ -1,0 +1,4 @@
+name = MCP Global Probe Mode
+author = officialsirh
+description = Test global game mode used by the MCP bridge to measure when a global mode's init and destroy run. Has no level of its own.
+version = 2

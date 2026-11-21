@@ -20,6 +20,7 @@ teardown-mcp repo (`playground/`: `main.xml`, `prefab/buggy.xml`, `prefab/blaste
 10. A custom hand tool
 11. A clickable menu
 12. Development loop that worked
+13. Game modes
 
 ## 1. A level that loads
 
@@ -397,3 +398,128 @@ typing = active          -- in client.tick: ignore key bindings while typing is 
    with `FindBodies(tag, true)`, voxel counts, `IsBodyBroken`, positions) rather than
    trusting the mod's own counters. Sampling the same reader a few times a second showed the
    cause of a wrong score within one run.
+
+## 13. Game modes
+
+Read from Teardown 2.2.0's own files (2026-11-21): `mods/contentgamemodeexample` (Tuxedo Labs'
+example), `mods/mpclassics` (Deathmatch, Team deathmatch, Capture the flag),
+`data/script/sandbox.lua`, the pause menu in `data/ui/hud.lua` and the mod manager in
+`data/ui/components/mod_manager.lua`; then measured through the bridge in the local
+multiplayer test (2026-11-21, MCP Playground with its probe mode).
+
+A mod declares game modes in a `gamemodes.txt` next to its `info.txt`, one `[Name]` section
+each. There are two kinds, and **which one depends on the kind of mod**:
+
+- **Content game mode, in a level mod** (a mod with `main.xml`): `layers = race`, optionally
+  `mission = ...`. Nothing else is needed: the playground's `[MCP probe]` / `layers =
+  mcpprobe` worked. The mode is part of the mod's own level: elements with `layer="race"`
+  load only in that mode, `layer="-race"` only without it. The example puts `main.lua` and
+  `sandbox.lua` in a `layer="-race"` group and the mode's script, goal trigger, spawn point
+  and cars in a `layer="race"` group:
+
+```xml
+<group name="Default" layer="-race">
+	<script file="main.lua"/>
+	<script file="sandbox.lua"/>
+</group>
+<group name="Race game mode" layer="race">
+	<instance pos="-38.3 3.2 -3.5" file="BUILT-IN/prefab/vehicle/land/musclecar_green.xml"/>
+	<script file="MOD/race.lua">
+		<trigger tags="goal" pos="40.3 0.0 -3.4" type="box" size="20 10 30"/>
+		<spawnpoint pos="-42.3 3.2 -0.3" rot="0.0 90.0 0.0"/>
+	</script>
+</group>
+```
+
+- **Global game mode, in a global mod** (no level of its own; the player switches it on in
+  the mod manager, like Multiplayer Classics): `path = deathmatch.lua` (relative to the mod
+  folder). Its script runs on whatever level is played with the mode. `en_name`,
+  `en_description` (and `de_name`, ...) and `preview` are optional display texts; the mode's
+  name defaults to the section name. A `path` mode in a level mod is **not** offered: the
+  playground with `path = script/probemode.lua` was never listed.
+
+How the game lists and starts them:
+
+- **Listing** (mod manager code, confirmed in game): the Play dialog of a mod shows that
+  mod's own modes plus the modes of every **enabled** mod flagged as a game-mode mod
+  (`mods.available.<id>.gamemode`). Global modes therefore appear only after their mod is
+  enabled.
+- **Registry:** each mode is `gamemodes.<mod id>.<key>`, where the key is the section name in
+  lower case with spaces as `-` (`[MCP probe]` became `mcp-probe`, `[Team deathmatch]`
+  `team-deathmatch`), with `name`, `nameoriginal`, `description`, `preview` and `layers` /
+  `mission` (content) or `path` / `restart` (global). The running mode is `game.gamemode`
+  ("" = none).
+- **Local multiplayer test:** the mod manager's two-player test runs
+  `Command("mods.testplay", 2, mod, layers, gameModeId)`, which starts the host as
+  `teardown_modtest.exe -half_screen 1 -mod_test_host "<mod>" "<level>" "<layers>"
+  "<mode id>" "<global mod ids, space-separated, in one argument>"` (recorded with Process
+  Monitor). `mp_test_start` takes `layers`, `game_mode` and `extra_mods` for those slots, and
+  without `layers` it reads the mode's `layers` from its mod's `gamemodes.txt`, as the mod
+  manager does: its launch of the probe mode passed `... main.xml mcpprobe
+  local-mcp-playground.mcp-probe local-mcp-bridge`, and ours now does the same.
+- **Switching while a level runs:** `SetString("game.gamemode.next", "<mod>.<key>")` in client
+  code (what the pause menu's Game Modes > Play does) reloaded the level with that mode's
+  layers in about 2.5 s (the log shows `Loading: .../main.xml (mcpprobe)`); `""` switched back to
+  no mode the same way. **Switching a content mode on or off reloads the level** (its layers
+  change); **ending a global mode does not**: the mode's script is unloaded in place (its
+  `destroy` runs, see below) and the level keeps running. A bridge `batch` with
+  `wait_scene: true` then waits in vain for a new scene: leave `wait_scene` off there.
+- `sandbox.lua` switches itself off while any game mode runs, content modes included (it
+  takes the mode's `path` as its test, and `""` counts as true in Lua; quirks.md section 4),
+  and back on when the mode ends. A level can keep it in its XML.
+
+Measured with the probe mode (2026-11-21, 2.2.0, local multiplayer test):
+
+- Started with `mp_test_start` `game_mode: "local-mcp-playground.MCP probe"` and `layers:
+  "mcpprobe"`: the mode was registered, `game.gamemode` held the id as passed, and the probe
+  script's `init` ran in the host's server and client halves and on the joined client. The
+  engine needs the layers in the launch: with the id alone (before `mp_test_start` looked them
+  up) the mode was registered but `game.gamemode` stayed empty and the layer did not load.
+- **`layer="-mcpprobe"` works as the example suggests:** a marker box in a `-mcpprobe` group
+  was absent while the mode ran and present after it was switched off, on host and joined
+  client.
+- **Single-player** (mod manager, One Player, "MCP probe"): the same: `game.gamemode` set,
+  `init` in both halves, marker absent, sandbox off; `game.levelid` was the mode id
+  (`local-mcp-playground.mcp-probe`) instead of `main`. Switching the mode off reloaded the
+  level there too (2.8 s; marker back, sandbox on, `game.levelid` `main`).
+- **Global modes start too**, with `game_mode: "builtin-mpclassics.deathmatch"` and
+  `extra_mods: ["builtin-mpclassics"]`: `game.gamemode` was set on the host and the joined
+  client, and Multiplayer Classics stayed active through the level load (2026-11-21, after the
+  fix below). **The mode's mod need not be enabled in the player's mod list:** the probe
+  global mod (`probemode/` in the teardown-mcp repo, linked as `mcp-probe-mode`, never enabled)
+  started with `game_mode: "local-mcp-probe-mode.mcp-global-probe"` and `extra_mods:
+  ["local-mcp-probe-mode"]`.
+- **The global mods are ONE argument.** Recorded with Process Monitor, the mod manager starts
+  the host with `"local-mcp-bridge builtin-mpclassics"` as a single quoted argument. Passed as
+  two arguments, the host takes only the first: Multiplayer Classics was dropped when the
+  level loaded and Deathmatch never started. The host's log line `Args:` joins the arguments
+  with spaces, so both launches look identical there; Process Monitor's "Process Create"
+  event shows the real quoting. `mp_test_start` passes them as one argument since.
+- **From a level script in the main game, `Command("mods.testplay", 2, mod, layers,
+  gameModeId)`** (the mod manager's own call; bridge `run_lua` `side: client` in
+  single-player) opened **no** test windows: it restarted the current single-player level with
+  the mode (`Command("mods.testplay", 2, "local-mcp-playground", "",
+  "builtin-mpclassics.deathmatch")` gave Deathmatch's setup screen with one player,
+  `game.gamemode` set, `IsMultiplayer()` false). So a script can start a global mode in
+  single-player, and global modes do run there; the player count is ignored from a level.
+- Single-player lists game modes like the test does: with Multiplayer Classics enabled,
+  `gamemodes` held `builtin-mpclassics` and `local-mcp-playground` in a single-player level.
+- `SetString("game.gamemode.next", "")` during that single-player Deathmatch ended the mode
+  **without a level reload** (observed once): `game.gamemode` became "", Deathmatch's screens
+  closed, the bridge's scene counter and `GetTime()` kept going, and the player kept the gun
+  from Deathmatch's loadout. The same holds in the multiplayer test for a global mode
+  (below); only content modes reload.
+- **`destroy()` did not run when the content mode was switched off** (no line from its
+  `destroy` in the host log between the probe's init and the reload). `game.*` registry keys
+  the probe wrote were gone after the switch.
+- **A global mode's `destroy()` does run when the mode ends** (the probe global mod, multiplayer
+  test, `SetString("game.gamemode.next", "")`): `server.destroy` and `client.destroy` both ran
+  on the host in the same frame, and the joined client's own `client.destroy` ran; there was
+  no level reload, `game.gamemode` became `""` and `level.sandbox` came back on. That is where
+  Deathmatch calls mplib's `toolsCleanup()`: a global mode must clean up there, because the
+  level and everything the mode spawned stay.
+
+The mpclassics modes are built on mplib (`unofficial-docs.md` section 6): `spawnInit`,
+`spawnSetDefaultLoadout`, `utilLoadLevelPlayerSpawns` (locations tagged `playerspawn`, else 64
+generated points), loot tiers from `ammospawn` locations, `countdownInit`, `statsTick`,
+`hudDrawGameModeHelpText`; `server.tick` calls `spawnTick`, `countdownTick`, `toolsTick`.

@@ -16,7 +16,8 @@ wrong guess often fails silently, and each look at the result can cost a level r
    `mp_test_start` with `mod` (a mod id or a folder name under `Documents/Teardown/mods`) and,
    to skip a mod's own menu level, `level`. It opens two windows (host + one client) and
    returns when both players are in. `players: 1` opens only the host: still a multiplayer
-   session, lighter and quicker, for work that does not need a second player. It needs no main game window. Single-player works too
+   session, lighter and quicker, for work that does not need a second player; `mp_test_join`
+   adds the client later (a late join) and `mp_test_stop` with `client_only` makes it leave. It needs no main game window. Single-player works too
    (replies then go through the savegame), but a level must be loaded first: by the user, or
    by clicking Play > Mod manager > the mod > Play > One Player with `send_input`, with "MCP
    Bridge" enabled there.
@@ -72,10 +73,12 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
 
 ## Things that will otherwise cost you a reload
 
-- **Do not pause, quit to the menu, or load a level path you have not seen work.** In
-  single-player, scripts do not run in the pause menu or main menu; only `screenshot` and
-  `send_input` still work there (a click on Continue or a second `esc` gets out of the pause
-  menu). The multiplayer test does not pause at all. `start_level` with
+- **Do not quit to the menu or load a level path you have not seen work.** In the main menu
+  no script runs; only `screenshot` and `send_input` still work. In the single-player pause
+  menu only `client.render` runs: the bridge answers `side: client` commands there, gives
+  every other side a "paused" error at once, and `run_lua` with `side: client` and
+  `SetPaused(false)` resumes the game (so does a click on Continue). The multiplayer test does
+  not pause at all. `start_level` with
   a bad path drops to the main menu.
 - **Registry sync:** `SetString(key, value)` on the server is visible to the host's own client
   half but not to joined clients. Pass `true` as the third argument to sync. A joined client's
@@ -101,6 +104,10 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
 - **A `<vox>` without `pos` is centred on its body origin**, height included: a model built
   standing on z = 0 hangs half its height below the origin.
 - **`server.postUpdate` / `client.postUpdate`** run once per physics step, after it.
+- **Events do not all reach joined clients:** `playerhurt` and `playerdied` do; `explosion`
+  and events a server script posts with `PostEvent` reach only the host. `SetPlayerHealth(0)`
+  posts no `playerdied` (damage through `ApplyPlayerDamage` does). Arguments: quirks.md,
+  "Engine events".
 
 The full list, with how each was measured, is in `references/quirks.md`. Read it before
 designing anything that crosses the server/client line, and add to it when you measure
@@ -122,6 +129,11 @@ something new (see "Extending this knowledge" there).
   multiplayer test, what is still unverified.
 - `references/bridge.md` - the MCP tools one by one, recipes (reload and check, inspect a
   mod's state, compare host and client, test UI code), failure messages and what to do.
+- `references/unofficial-docs.md` - not verified, from the community "Unofficial TD Docs":
+  the callbacks `script_defs.lua` leaves out (`render`, `handleCommand`, `destroy`), entity
+  tags the engine reads (`unbreakable`, `interact`, `nocull`, vehicle tags...), registry
+  keys, Voxscript, and the game's multiplayer game-mode library (mplib). Look there before
+  guessing at a tag or registry key; measure before relying on it.
 
 ## Reporting
 

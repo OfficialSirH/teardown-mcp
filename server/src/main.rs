@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const INSTRUCTIONS: &str = "Drives a running Teardown game through the in-game \"MCP Bridge\" mod, for developing Teardown mods. \
-The game must be inside a level with the mod enabled. Mod scripts do not run in the single-player pause menu or the main menu: never pause the game (SetPaused), quit to the menu, or load a level path you are not sure of. If the game stops answering, take a screenshot; in the pause menu, send_input can click Continue, otherwise ask the user. \
+The game must be inside a level with the mod enabled. Mod scripts do not run in the main menu, and in the single-player pause menu only side=client commands run (any other side answers at once that the game is paused; run_lua side=client with SetPaused(false) resumes it). Do not quit to the menu or load a level path you are not sure of. The game may have been closed since your last call: after 5 minutes without an answer the server first checks the game windows and says at once if none is open (then ask the user or use mp_test_start; do not retry). If the game stops answering, take a screenshot; in the pause menu, send_input can click Continue, otherwise ask the user. \
 After editing another mod's scripts, XML or assets, call reload_scene: it restarts the level and returns only once the new scene is running (this can take minutes for heavy mods). \
 Scripts are #version 2: the host has a server half and a client half with separate Lua globals; pick the half with `side`. \
 World changes (spawn, delete, moving bodies, player health) belong on the server; Ui* and local-player camera/input belong on the client. \
@@ -60,7 +60,7 @@ fn tools() -> Value {
     let timeout = json!({"type": "number", "description": "Seconds to wait for the new scene (default 1800; heavy mods can take minutes)."});
     let player = json!({"type": "integer", "description": "Player id (default 0: the host on the server, the local player on the client)."});
     json!([
-        tool("ping", "Check that the game answers. Returns game version, level path, scene counter and the players (on the server side each with `ready`: that player's own game has loaded the level and runs its scripts).", json!({"side": side}), &[]),
+        tool("ping", "Check that the game answers. Returns game version, level path, scene counter, the players (on the server side each with `ready`: that player's own game has loaded the level and runs its scripts), `state` (\"PLAY\" in a level), `paused` (a pause menu is open; in the multiplayer test nothing stops) and `paused_sp` (single-player pause: only side=client commands run).", json!({"side": side}), &[]),
         tool("bridge_status", "Bridge state without talking to the game: file paths and the mod's saved status keys.", json!({}), &[]),
         tool("run_lua", "Run Lua code in the game and return its return values and anything it print()s. An expression works too (\"GetPlayerHealth()\"). Full Teardown API available.",
             json!({"code": {"type": "string"}, "file": {"type": "string", "description": "Absolute path of a Lua file to run instead of `code` (forward slashes). Use it for anything longer than a few lines."}, "side": side}), &[]),
@@ -85,7 +85,7 @@ fn tools() -> Value {
         tool("registry_set", "Write a registry key.",
             json!({"key": {"type": "string"}, "value": {}, "type": {"type": "string", "enum": ["string", "int", "float", "bool"]}, "sync": {"type": "boolean", "description": "Sync to clients (server side only)."}, "side": side}), &["key", "value"]),
         tool("registry_clear", "Delete a registry key and its children.", json!({"key": {"type": "string"}, "side": side}), &["key"]),
-        tool("player_get", "Player transform, camera, velocity, health, vehicle and tool.", json!({"player": player, "side": side}), &[]),
+        tool("player_get", "Player transform, camera, velocity, health, vehicle and tool. For the game's own local player (player 0 or that id) also `local_state`: the engine's game.player.* keys (canusetool, cangrab, caninteract, grabbing, disableinput, interactive, usevehicle, usescreen, tool, character, ...), handy to see why an input test does nothing.", json!({"player": player, "side": side}), &[]),
         tool("player_set", "Teleport a player and/or set velocity and health.",
             json!({"pos": vec3("World position."), "rot": rot, "velocity": vec3("Velocity."), "health": {"type": "number", "description": "0..1"}, "player": player, "side": side}), &[]),
         tool("spawn", "Spawn a prefab XML file or an XML string at a position. Returns the new entity handles.",
@@ -103,7 +103,9 @@ fn tools() -> Value {
         tool("mp_test_start", "Start Teardown's local multiplayer test: two game windows on this PC (\"TD - Host\" and \"TD - Client1\") running the given mod's level, with the MCP Bridge mod loaded, then wait until the host answers and the client's player is in the level. Use this to test a mod in multiplayer; commands then go to the host window.",
             json!({"mod": {"type": "string", "description": "Mod to start: its id (\"local-my-mod\", \"steam-<workshop id>\", \"builtin-<name>\") or its folder name under Documents/Teardown/mods (\"My Mod\")."},
                    "level": {"type": "string", "description": "Level XML, relative to the mod folder or a full path (default main.xml)."},
-                   "extra_mods": {"type": "array", "items": {"type": "string"}, "description": "Ids of further global mods to load besides the bridge (untested)."},
+                   "extra_mods": {"type": "array", "items": {"type": "string"}, "description": "Ids of further global mods to load besides the bridge, e.g. [\"builtin-mpclassics\"] for its game modes."},
+                   "game_mode": {"type": "string", "description": "Start with this game mode, as the mod manager's game mode choice does: \"<mod id>.<key>\", the key being the gamemodes.txt section name in lower case with spaces as '-' (\"builtin-mpclassics.deathmatch\", \"local-my-mod.my-mode\"). A content mode's `layers` are read from its mod's gamemodes.txt; a global mode needs its mod in `extra_mods` (default none)."},
+                   "layers": {"type": "string", "description": "Level layers to enable. Default: the game_mode's `layers` from gamemodes.txt, else none."},
                    "players": {"type": "integer", "enum": [1, 2], "description": "2 (default): host and client windows. 1: the host window alone, still a multiplayer session (server and client halves, multiplayer rules), quicker to start and lighter."},
                    "restart": {"type": "boolean", "description": "Close a multiplayer test that is already running and start a new one (default false)."},
                    "wait_for_client": {"type": "boolean", "description": "Also wait until the client window's player is in the level (default true with 2 players)."},
@@ -111,9 +113,12 @@ fn tools() -> Value {
         tool("wait_for_players", "Wait until at least `count` players are in the level with their game's scripts running (each client's game reports to the host once it is really in). Use this instead of guessing from logs or screenshots whether a client has finished joining. Returns the player list.",
             json!({"count": {"type": "integer", "description": "Players needed (default 2)."},
                    "timeout_secs": {"type": "number", "description": "Seconds to wait (default 300)."}}), &[]),
-        tool("mp_test_stop", "Close the local multiplayer test windows.", json!({}), &[]),
+        tool("mp_test_stop", "Close the local multiplayer test windows. With client_only, close only the client window: its player leaves and the host keeps running.",
+            json!({"client_only": {"type": "boolean", "description": "Close only \"TD - Client1\" (a player leaving; default false)."}}), &[]),
+        tool("mp_test_join", "A late join: start the multiplayer test's client window alone, to join a host that is already running (e.g. one started with mp_test_start players: 1), and wait until its player is in the level. Returns the player list.",
+            json!({"timeout_secs": {"type": "number", "description": "Seconds to wait for the player (default 300)."}}), &[]),
         tool("send_input", "Press keys and use the mouse in the game window, as a player would: for testing tools, vehicles driven by hand, and clickable UI. Brings the game window to the front for the duration (the user loses keyboard focus for that time) and sends nothing unless that window really has focus. Avoid esc unless you mean to open the pause menu: scripts stop while it is open.",
-            json!({"actions": {"type": "array", "description": "Run in order. Each is one of: {\"key\": \"w\", \"hold_ms\": 500} (letters, digits, space, enter, esc, tab, shift, ctrl, alt, arrows, f1-f12; combos held together with +, e.g. \"shift+alt+f3\"); {\"click\": \"left\"|\"right\"|\"middle\", \"x\": 0.5, \"y\": 0.5, \"hold_ms\": 60} (x, y are fractions of the window, as in a screenshot; omit them to click where the cursor or crosshair is); {\"drag\": [x0, y0], \"to\": [x1, y1], \"hold_ms\": 300} (press at one window fraction, move, release at the other: sliders); {\"move\": [dx, dy]} (relative mouse movement in pixels: turns the camera; about 0.115 degrees per pixel at default sensitivity); {\"scroll\": 1}; {\"wait_ms\": 200}.", "items": {"type": "object"}},
+            json!({"actions": {"type": "array", "description": "Run in order. Each is one of: {\"key\": \"w\", \"hold_ms\": 500} (letters, digits, space, enter, esc, tab, shift, ctrl, alt, arrows, f1-f12; combos held together with +, e.g. \"shift+alt+f3\"); {\"click\": \"left\"|\"right\"|\"middle\", \"x\": 0.5, \"y\": 0.5, \"hold_ms\": 60} (x, y are fractions of the window, as in a screenshot; omit them to click where the cursor or crosshair is); {\"drag\": [x0, y0], \"to\": [x1, y1], \"hold_ms\": 300} (press at one window fraction, move, release at the other: sliders); {\"move\": [dx, dy]} (relative mouse movement in pixels: turns the camera; about 0.115 degrees per pixel at default sensitivity); {\"scroll\": 1}; {\"wait_ms\": 200}; {\"action\": \"interact\", \"hold_ms\": 60} (a game input action: the key or mouse button the player has bound to it is read from the game's registry, game.input.<action>; e.g. up, down, left, right, jump, crouch, interact, usetool, grab, flashlight, map, handbrake, vehicle_raise, vehicle_lower, vehicle_action, camera_view, pause).", "items": {"type": "object"}},
                    "window": {"type": "string", "description": "Window title (default \"TD - Host\" if present, else \"Teardown\")."},
                    "restore_focus": {"type": "boolean", "description": "Give focus back to the window that had it (default true)."}}), &["actions"]),
         tool("screenshot", "Capture a Teardown window (shows the scene and red script-error text). By default the multiplayer test's host window (\"TD - Host\") if there is one, else the normal game window (\"Teardown\").",
@@ -328,8 +333,26 @@ impl Server {
                     global_mods.push(x.to_string());
                 }
                 let client = a["players"].as_u64().unwrap_or(2) >= 2;
-                let launch = mptest::Launch { mod_id, level, global_mods, client };
+                let game_mode = a["game_mode"].as_str().unwrap_or("").to_string();
+                // A content mode needs its layers; look them up like the mod manager does.
+                let layers = match a["layers"].as_str() {
+                    Some(l) => l.to_string(),
+                    None if !game_mode.is_empty() => {
+                        mptest::mode_layers(&game_mode, &self.game_dir, &local_mods)?.unwrap_or_default()
+                    }
+                    None => String::new(),
+                };
+                let launch = mptest::Launch {
+                    mod_id,
+                    level,
+                    layers,
+                    game_mode,
+                    global_mods,
+                    client,
+                };
                 mptest::start(&launch, &self.game_dir, &self.log_dir)?;
+                // The windows take a few seconds to get their titles; the loop below checks.
+                self.bridge.set_alive(true);
 
                 // The level is up when the bridge in the host window answers.
                 let total = self.timeouts(a).scene;
@@ -363,8 +386,13 @@ impl Server {
                                     }
                                 }
                             }
+                            let mode = if launch.game_mode.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" Game mode {}, layers \"{}\".", launch.game_mode, launch.layers)
+                            };
                             return Ok(text(format!(
-                                "Multiplayer test: host running after {host_secs:.0} s.{note} Mod {}, level {}, global mods {:?}.\n{}",
+                                "Multiplayer test: host running after {host_secs:.0} s.{note} Mod {}, level {}, global mods {:?}.{mode}\n{}",
                                 launch.mod_id, launch.level, launch.global_mods, pretty(&info)
                             )));
                         }
@@ -381,13 +409,16 @@ impl Server {
                 let info = self.wait_players(count, Duration::from_secs_f64(secs), progress)?;
                 Ok(text(pretty(&info)))
             }
+            "mp_test_stop" if a["client_only"].as_bool().unwrap_or(false) => self.mp_client_leave(),
             "mp_test_stop" => Ok(text(if mptest::stop() {
+                self.bridge.set_alive(false);
                 "Multiplayer test windows closed.".into()
             } else {
                 "No multiplayer test was running.".into()
             })),
+            "mp_test_join" => self.mp_client_join(a, progress),
             "game_health" | "crash_report" | "dump_game" | "perf_sample" | "save_game_code" => self.diag(name, a, progress),
-            "send_input" => self.send_input(a),
+            "send_input" => self.send_input(a, progress),
             "screenshot" => self.screenshot(a),
             "read_log" => self.read_log(a),
             _ => Err(format!("unknown tool: {name}")),
@@ -397,19 +428,34 @@ impl Server {
     /// Ping the host until `count` players are in the level with their scripts running.
     /// Returns the last ping.
     fn wait_players(&mut self, count: usize, limit: Duration, progress: &mut dyn FnMut(&str)) -> Result<Value, String> {
+        self.wait_players_except(count, &[], limit, progress)
+    }
+
+    /// Wait until `count` ready players are listed whose ids are not in `known`.
+    fn wait_players_except(
+        &mut self,
+        count: usize,
+        known: &[Value],
+        limit: Duration,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<Value, String> {
         let started = std::time::Instant::now();
         let t = Timeouts { response: self.response, scene: limit };
         loop {
             let out = self.bridge.send(vec![make_cmd("ping", &json!({}), false)], &t, progress)?;
             let info = unwrap_result("ping", &out.results[0])?;
             let players = info["players"].as_array().cloned().unwrap_or_default();
-            let ready = players.iter().filter(|p| p["ready"] == json!(true)).count();
+            let ready = players
+                .iter()
+                .filter(|p| p["ready"] == json!(true) && !known.contains(&p["id"]))
+                .count();
             if ready >= count {
                 return Ok(info);
             }
             if started.elapsed() > limit {
+                let what = if known.is_empty() { "players" } else { "new players" };
                 return Err(format!(
-                    "{ready} of {count} players ready after {} s; players: {}",
+                    "{ready} of {count} {what} ready after {} s; players: {}",
                     limit.as_secs(),
                     Value::Array(players)
                 ));
@@ -508,20 +554,156 @@ impl Server {
         }))))
     }
 
+    /// A late join: start the client window alone and wait until its player is in the level.
+    #[cfg(windows)]
+    fn mp_client_join(&mut self, a: &Value, progress: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
+        if diag::games(Some("TD - Host")).is_empty() {
+            return Err("no multiplayer test host window (\"TD - Host\") is open: start one with mp_test_start (players: 1 for the host alone)".into());
+        }
+        if !diag::games(Some("TD - Client1")).is_empty() {
+            return Err("the client window (\"TD - Client1\") is already open; mp_test_stop with client_only: true closes it".into());
+        }
+        let t = Timeouts { response: self.response, scene: self.response };
+        let before = self.bridge.send(vec![make_cmd("ping", &json!({}), false)], &t, progress)?;
+        // Wait for a player id that was not listed before: right after mp_test_stop client_only
+        // the host can still list the player who left, and ids are never reused (a rejoin gets
+        // a new one), so counting players would wait for one too many.
+        let known: Vec<Value> = unwrap_result("ping", &before.results[0])?["players"]
+            .as_array()
+            .map(|ps| ps.iter().map(|p| p["id"].clone()).collect())
+            .unwrap_or_default();
+        mptest::start_client(&self.game_dir, &self.log_dir)?;
+        let started = std::time::Instant::now();
+        let secs = a["timeout_secs"].as_f64().unwrap_or(300.0).clamp(10.0, 7200.0);
+        let info = self.wait_players_except(1, &known, Duration::from_secs_f64(secs), progress)?;
+        Ok(text(format!(
+            "Client joined after {:.0} s.\n{}",
+            started.elapsed().as_secs_f64(),
+            pretty(&info)
+        )))
+    }
+
+    /// Close only the client window: its player leaves, the host keeps running.
+    #[cfg(windows)]
+    fn mp_client_leave(&mut self) -> Result<Vec<Value>, String> {
+        let gs = diag::games(Some("TD - Client1"));
+        let Some(g) = gs.first() else {
+            return Ok(text("No client window (\"TD - Client1\") was open.".into()));
+        };
+        mptest::kill_pid(g.pid);
+        for _ in 0..50 {
+            if diag::games(Some("TD - Client1")).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(text("Client window closed; the host keeps running.".into()))
+    }
+
+    #[cfg(not(windows))]
+    fn mp_client_join(&mut self, _a: &Value, _p: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
+        Err("the multiplayer test is only available on Windows".into())
+    }
+
+    #[cfg(not(windows))]
+    fn mp_client_leave(&mut self) -> Result<Vec<Value>, String> {
+        Err("the multiplayer test is only available on Windows".into())
+    }
+
     #[cfg(not(windows))]
     fn diag(&mut self, _name: &str, _a: &Value, _p: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
         Err("diagnostics are only available on Windows".into())
     }
 
     #[cfg(windows)]
-    fn send_input(&self, a: &Value) -> Result<Vec<Value>, String> {
+    fn send_input(&mut self, a: &Value, progress: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
         let actions = a["actions"].as_array().ok_or("actions must be an array")?;
-        let report = input::send(actions, a["window"].as_str(), a["restore_focus"].as_bool().unwrap_or(true))?;
-        Ok(text(format!("Sent: {report}")))
+        let window = a["window"].as_str();
+        let mut note = String::new();
+        let resolved;
+        let actions = if actions.iter().any(|x| x["action"].is_string()) {
+            let (r, n) = self.resolve_input_actions(actions, window, progress)?;
+            resolved = r;
+            note = n;
+            &resolved
+        } else {
+            actions
+        };
+        let report = input::send(actions, window, a["restore_focus"].as_bool().unwrap_or(true))?;
+        Ok(text(format!("Sent: {report}{note}")))
+    }
+
+    /// Replace {"action": "<game input>"} entries by the key or mouse button the player has bound
+    /// to it, read from the game's registry (game.input.<action>, e.g. interact = "e",
+    /// usetool = "lmb"). The bindings are read from the game behind the window the input goes to.
+    #[cfg(windows)]
+    fn resolve_input_actions(
+        &mut self,
+        actions: &[Value],
+        window: Option<&str>,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<(Vec<Value>, String), String> {
+        let side = if window == Some("TD - Client1") { "remote" } else { "client" };
+        let t = Timeouts { response: self.response, scene: self.response };
+        let out = self.bridge.send(
+            vec![make_cmd("registry_get", &json!({"key": "game.input", "depth": 1, "side": side}), false)],
+            &t,
+            progress,
+        )?;
+        let reg = unwrap_result("registry_get", &out.results[0])?;
+        let binds = &reg["children"];
+        let mut mapped = Vec::new();
+        let mut out_actions = Vec::with_capacity(actions.len());
+        for x in actions {
+            let Some(name) = x["action"].as_str() else {
+                out_actions.push(x.clone());
+                continue;
+            };
+            // curdevice holds the current input device ("mouse"), not a binding.
+            let bound = if name == "curdevice" { "" } else { binds[name]["value"].as_str().unwrap_or("") };
+            if bound.is_empty() {
+                let known: Vec<&str> = binds
+                    .as_object()
+                    .map(|o| {
+                        o.iter()
+                            .filter(|(k, v)| *k != "curdevice" && v["value"].as_str().is_some_and(|s| !s.is_empty()))
+                            .map(|(k, _)| k.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Err(format!(
+                    "the game has no key bound to input action \"{name}\" (game.input.{name}); bound actions: {}",
+                    known.join(", ")
+                ));
+            }
+            let mut y = x.as_object().cloned().unwrap_or_default();
+            y.remove("action");
+            match bound {
+                "lmb" => { y.insert("click".into(), json!("left")); }
+                "rmb" => { y.insert("click".into(), json!("right")); }
+                "mmb" => { y.insert("click".into(), json!("middle")); }
+                "wheel" => { y.insert("scroll".into(), json!(if name.contains("down") { -1 } else { 1 })); }
+                k => {
+                    let key = match k {
+                        "uparrow" => "up",
+                        "downarrow" => "down",
+                        "leftarrow" => "left",
+                        "rightarrow" => "right",
+                        "pgup" => "pageup",
+                        "pgdown" => "pagedown",
+                        other => other,
+                    };
+                    y.insert("key".into(), json!(key));
+                }
+            }
+            mapped.push(format!("{name} = {bound}"));
+            out_actions.push(Value::Object(y));
+        }
+        Ok((out_actions, format!(" (bindings: {})", mapped.join(", "))))
     }
 
     #[cfg(not(windows))]
-    fn send_input(&self, _a: &Value) -> Result<Vec<Value>, String> {
+    fn send_input(&mut self, _a: &Value, _p: &mut dyn FnMut(&str)) -> Result<Vec<Value>, String> {
         Err("send_input is only available on Windows".into())
     }
 
@@ -600,6 +782,10 @@ fn main() {
         Ok("save") => || false,
         _ => host_test_window,
     };
+    #[cfg(windows)]
+    {
+        server.bridge.alive_check = diag::alive_check;
+    }
     if let Err(e) = server.bridge.install() {
         eprintln!("teardown-mcp: {e}");
     }

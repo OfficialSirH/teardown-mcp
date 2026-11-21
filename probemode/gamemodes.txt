@@ -1,0 +1,2 @@
+[MCP global probe]
+path = probe.lua

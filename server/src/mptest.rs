@@ -1,8 +1,9 @@
 //! Start and stop Teardown's local multiplayer test: two `teardown_modtest.exe` windows
 //! (host + client), the same way the game's mod manager launches them:
 //!
-//!   teardown_modtest.exe -half_screen 1 -mod_test_host "<mod id>" "<level xml>" "" ""
-//!                        "<global mod id>" -logfile <appdata>/log_0.txt
+//!   teardown_modtest.exe -half_screen 1 -mod_test_host "<mod id>" "<level xml>" "<layers>"
+//!                        "<game mode id>" "<global mod ids, space-separated, one argument>"
+//!                        -logfile <appdata>/log_0.txt
 //!   teardown_modtest.exe -half_screen 2 -mod_test_client -logfile <appdata>/log_1.txt
 
 use std::path::{Path, PathBuf};
@@ -14,6 +15,10 @@ const STEAM_APP_ID: &str = "1167630";
 pub struct Launch {
     pub mod_id: String,
     pub level: String,
+    /// Level layers to enable ("" = none), as the mod manager passes for a content game mode.
+    pub layers: String,
+    /// Game mode id "<mod id>.<Name from gamemodes.txt>" ("" = none).
+    pub game_mode: String,
     pub global_mods: Vec<String>,
     /// Also start the client window (false: the host plays alone, still a multiplayer session).
     pub client: bool,
@@ -58,6 +63,53 @@ fn mod_folder(id: &str, game_dir: &Path, local_mods: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// A game mode's `layers` from its mod's gamemodes.txt, as the mod manager looks them up
+/// before it starts a test (`gamemodes.<id>.layers`). `mode` is "<mod id>.<key>"; the key is
+/// matched the way the game makes registry keys: section name in lower case, other characters
+/// as '-' ("MCP probe" and "mcp-probe" both match `[MCP probe]`). Ok(None): a global mode
+/// (no `layers`). Err: the mod or the mode was not found.
+pub fn mode_layers(mode: &str, game_dir: &Path, local_mods: &Path) -> Result<Option<String>, String> {
+    let (mod_id, key) = mode
+        .split_once('.')
+        .ok_or_else(|| format!("game_mode \"{mode}\" must look like \"<mod id>.<mode>\""))?;
+    let folder = mod_folder(mod_id, game_dir, local_mods)
+        .ok_or_else(|| format!("cannot find the folder of mod {mod_id} (from game_mode \"{mode}\")"))?;
+    let text = std::fs::read_to_string(folder.join("gamemodes.txt"))
+        .map_err(|e| format!("{}: {e}", folder.join("gamemodes.txt").display()))?;
+    let want = slug(key);
+    let mut names = Vec::new();
+    let mut current: Option<String> = None;
+    let mut layers: Option<String> = None;
+    let mut found = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if found {
+                break;
+            }
+            names.push(name.to_string());
+            found = slug(name) == want;
+            current = Some(name.to_string());
+            continue;
+        }
+        if found && current.is_some() {
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "layers" {
+                    let v = v.trim();
+                    layers = (!v.is_empty()).then(|| v.to_string());
+                }
+            }
+        }
+    }
+    if !found {
+        return Err(format!(
+            "mod {mod_id} has no game mode \"{key}\" in its gamemodes.txt; it has: {}",
+            names.iter().map(|n| format!("{mod_id}.{}", slug(n))).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(layers)
 }
 
 /// Turn what the caller gave (a mod id, or a folder name under the local mods folder) into
@@ -158,44 +210,68 @@ fn keep_stdio_private() {
 #[cfg(not(windows))]
 fn keep_stdio_private() {}
 
-pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<(), String> {
+fn spawn_exe(game_dir: &Path, args: Vec<String>) -> Result<(), String> {
     keep_stdio_private();
     let exe = game_dir.join(EXE);
     if !exe.is_file() {
         return Err(format!("{} not found (set TEARDOWN_DIR to the game folder)", exe.display()));
     }
-    let spawn = |args: Vec<String>| -> Result<(), String> {
-        Command::new(&exe)
-            .args(&args)
-            .current_dir(game_dir)
-            // Started outside Steam's own launch, the game needs to be told which app it is.
-            .env("SteamAppId", STEAM_APP_ID)
-            .env("SteamGameId", STEAM_APP_ID)
-            // Never let the game write into our stdout: that is the MCP channel.
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("cannot start {}: {e}", exe.display()))
-    };
+    Command::new(&exe)
+        .args(&args)
+        .current_dir(game_dir)
+        // Started outside Steam's own launch, the game needs to be told which app it is.
+        .env("SteamAppId", STEAM_APP_ID)
+        .env("SteamGameId", STEAM_APP_ID)
+        // Never let the game write into our stdout: that is the MCP channel.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot start {}: {e}", exe.display()))
+}
+
+/// The client window alone, to join a host that is already running (a late join).
+pub fn start_client(game_dir: &Path, appdata: &Path) -> Result<(), String> {
+    spawn_exe(
+        game_dir,
+        ["-half_screen", "2", "-mod_test_client", "-logfile", &fwd(&appdata.join("log_1.txt"))]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
+}
+
+/// Close one test window's process (the client, to make a player leave).
+pub fn kill_pid(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<(), String> {
+    let spawn = |args: Vec<String>| spawn_exe(game_dir, args);
     // Alone, the host gets a normal window instead of the left half of the screen.
     let mut host: Vec<String> = Vec::new();
     if l.client {
         host.extend(["-half_screen".to_string(), "1".to_string()]);
     }
-    host.extend(["-mod_test_host", &l.mod_id, &l.level, "", ""].iter().map(|s| s.to_string()));
-    host.extend(l.global_mods.iter().cloned());
+    // The two slots after the level take what the mod manager's Command("mods.testplay", n,
+    // mod, layers, gameModeId) passes: layers, then the game mode.
+    host.extend(["-mod_test_host", &l.mod_id, &l.level, &l.layers, &l.game_mode].iter().map(|s| s.to_string()));
+    // All global mods go in ONE argument, separated by spaces, as the game's own launcher
+    // passes them ("local-mcp-bridge builtin-mpclassics"). As separate arguments the host
+    // takes only the first and drops the rest (a global game mode then never starts). The
+    // host's "Args:" log line joins arguments with spaces and hides the difference.
+    host.push(l.global_mods.join(" "));
     host.push("-logfile".into());
     host.push(fwd(&appdata.join("log_0.txt")));
     spawn(host)?;
     if !l.client {
         return Ok(());
     }
-    spawn(
-        ["-half_screen", "2", "-mod_test_client", "-logfile", &fwd(&appdata.join("log_1.txt"))]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    )
+    start_client(game_dir, appdata)
 }

@@ -28,6 +28,28 @@
 	<script file="MOD/script/range.lua"/>
 	<script file="MOD/script/director.lua"/>
 	<script file="MOD/script/gate.lua"/>
+	<!-- nomerge probe: two touching voxboxes per body; does the engine merge them at load? -->
+	<body pos="-70.0 0.0 -30.0" tags="mcpmerge">
+		<voxbox pos="0.0 0.0 0.0" size="5 5 5" material="wood"/>
+		<voxbox pos="0.5 0.0 0.0" size="5 5 5" material="wood"/>
+	</body>
+	<body pos="-70.0 0.0 -25.0" tags="mcpnomerge nomerge">
+		<voxbox pos="0.0 0.0 0.0" size="5 5 5" material="wood"/>
+		<voxbox pos="0.5 0.0 0.0" size="5 5 5" material="wood"/>
+	</body>
+	<!-- Voxscript probe (voxscript/probe.lua): default parameters, and size / mat set here. -->
+	<voxscript pos="-40.0 0.0 -30.0" file="MOD/voxscript/probe.lua" tags="mcpvox"/>
+	<voxscript pos="-50.0 0.0 -30.0" file="MOD/voxscript/probe.lua" tags="mcpvox2">
+		<parameters size="12" mat="metal"/>
+	</voxscript>
+	<!-- Content game mode "MCP probe" (gamemodes.txt): this group loads only with that mode. -->
+	<group name="MCP probe game mode" layer="mcpprobe">
+		<script file="MOD/script/probemode.lua"/>
+	</group>
+	<!-- And this one loads only without that mode: a marker box, found by its tag. -->
+	<group name="No game mode" layer="-mcpprobe">
+		<voxbox pos="-20.0 0.0 -30.0" size="3 3 3" color="0.9 0.9 0.2" tags="mcpnomode"/>
+	</group>
 	<script file="MOD/script/blaster.lua"/>
 	<script file="MOD/script/menu.lua"/>
 </scene>

@@ -141,6 +141,28 @@ fn exe_name(pid: u32) -> String {
     }
 }
 
+/// Checked before the first bridge command after a quiet spell: is there a game window the
+/// bridge can talk to (the multiplayer test's host, or the normal game), and is it responding?
+/// Cheap (window lookup only), so a closed or hung game is reported at once instead of after
+/// the bridge's response timeout.
+pub fn alive_check() -> Result<(), String> {
+    let gs: Vec<Game> = games(None).into_iter().filter(|g| g.title != "TD - Client1").collect();
+    let Some(g) = gs.first() else {
+        return Err(if games(Some("TD - Client1")).is_empty() {
+            "Teardown is not running: no game window (\"Teardown\" or the multiplayer test's \"TD - Host\") is open. Ask the user to start the game and load a level, or start a multiplayer test with mp_test_start".to_string()
+        } else {
+            "only the multiplayer test's client window (\"TD - Client1\") is open, no host: restart the test with mp_test_start and restart=true".to_string()
+        });
+    };
+    if unsafe { IsHungAppWindow(g.hwnd) } != 0 {
+        return Err(format!(
+            "the game window \"{}\" is not responding (Windows sees it as hung). Use game_health and dump_game to see where it is stuck",
+            g.title
+        ));
+    }
+    Ok(())
+}
+
 /// Game windows, found by title; a window only counts when its process is a Teardown exe
 /// (a File Explorer window on the "Teardown" folder has the same title).
 pub fn games(only: Option<&str>) -> Vec<Game> {
