@@ -93,9 +93,27 @@ items are listed at the end. Re-measure after a game update: the probes are in
 - A script without `#version 2` is silently disabled in multiplayer (it still runs in
   single-player; section 9).
 - `<screen script="...">` scripts run as version 1 (with `#version 2` the `client` / `server`
-  tables do not exist), and version 1 scripts are disabled in multiplayer, so screens are
-  blank there. A `<screen>` with no script logs `Script not found: data` each time one spawns.
-  A screen is deleted together with the shape it sits on.
+  tables do not exist). **Unlike level scripts, they are not disabled in multiplayer**
+  (measured 2026-11-22, 2.2.0, multiplayer test, MCP Playground; probe
+  `playground/screen/probescreen.lua`): a `<screen size="1.8 1.0" enabled="true">` on a
+  voxbox, spawned at runtime by the server, ran its version 1 `init`, `tick`, `update` and
+  `draw` and showed its UI on the host **and** on the joined client. **The script runs once,
+  on the host, and joined clients are shown its picture:** a random number drawn in `init`
+  (7403) and `GetLocalPlayer()` (1, name "Host") read the same in the client's view of the
+  screen as in the host's, the frame counter and `GetTime()` matched, and the script wrote
+  its registry counters on the host only (none in the client's registry). So a screen script
+  sees the host's state directly (registry, entities), needs no synced keys, and every player
+  sees the same picture. The campaign hub computer behaves that way: when the joined client
+  operated it, the host's view showed the same tab, list, hover and mouse cursor (seen by the
+  user, 2026-11-22). Its canvas was 640 x 480; its `tick` ran about 37 times a second while
+  the game ran faster. The picture appeared a moment after the spawn, not in the first frame.
+  (Not measured: how a joined client's mouse and clicks reach the host's script when it
+  operates a screen; the hub computer shows that they do.) (An earlier note here said
+  screens are blank in multiplayer; that was inferred from the level-script rule, never
+  measured, and it is wrong. The game's own campaign hub computer, `ui/terminal.lua`, a
+  version 1 screen script, works in co-op too.) A `<screen>` with no script logs `Script not
+  found: data` each time one spawns. A screen is deleted together with the shape it sits on.
+  Screens drawn from sprites instead: "World-space sprites" (section 5).
 - **`GetScriptId()`** is undocumented (not in `script_defs.lua`) and returns the calling
   script's own entity handle.
 - **A script that deletes its own entity inside its own callback crashes the game** ("General
@@ -219,6 +237,68 @@ script that reads the registry less often; such readers must latch the value.
 `ServerCall("server.fn", ...)` from a client and `ClientCall(playerId, "client.fn", ...)` from
 the server both ran. The function must be defined in the same script file.
 
+### ServerCall, ClientCall and who is calling (measured 2026-11-22, 2.2.0, multiplayer test)
+
+Probe: `playground/script/probenet.lua` (spawned at runtime), host = player 1, joined
+client = player 2.
+
+- **`ServerCall` carries no caller identity.** `server.f(...)` received exactly the arguments
+  sent (`select("#", ...)` = 2 for two arguments), nothing appended. The pattern in
+  `script_defs.lua` and the game's own scripts passes `GetLocalPlayer()` as an ordinary
+  argument, and **a client can pass any id**: player 2 calling with id 1 arrived as `1 |
+  spoofed`, indistinguishable from the host's own call. The engine has no function to ask
+  who sent a call (none among its strings either).
+- **A script can only call its own server half.** `ServerCall("server.f")` from another
+  script (the bridge, on the joined client) delivered nothing: no error to Lua (`pcall`
+  returned true) and nothing in either log, only red text on that client's screen:
+  "Function server.f not recognized. Function name must be passed as a string literal." So
+  function names are matched against the calling script's own functions, written as string
+  literals. A mod's server functions are reachable only from that mod's own client code,
+  whose files the multiplayer mod check compares (section 10); tampering means changing the
+  game or its memory, not just a file.
+- `ClientCall(id, ...)` reached only that player (`ClientCall(2, ...)`: the joined client got
+  it, the host's client half did not); `ClientCall(0, ...)` reached every player, host
+  included. The engine refuses `ClientCall` in `init` ("ClientCall in not allowed in script
+  init", an engine string) and `ServerCall` from a `<screen>` script.
+- **`IsPlayerHost(id)`** answered correctly on the server and on the joined client
+  (`IsPlayerHost(1)` true, `(2)` false). On the server it checks only the id it is given, so
+  `function server.f(p) if not IsPlayerHost(p) then return end ... end` trusts the caller.
+  Of 39 Workshop mods (2026-11-22) that call `IsPlayerHost`, 36 server handlers do exactly
+  that; the game's own Multiplayer Classics checks nothing in `server.hudPlayPressed` (starts
+  the match) or `server.setTime`.
+- **Ways to know the caller that hold up:**
+  - **Host-only actions through the registry:** a key the host's client half writes
+    (not synced) is read by its server half at once; a key written on a joined client never
+    reaches the server (measured: `level.probenet.hostcmd` arrived, `level.probenet.clientcmd`
+    did not). So a host's own UI can command its server half with a plain `SetString` and
+    the server reads it in `server.tick`; nobody else can write that key.
+  - **Per-player tokens:** the server makes a random token per player on their first tick
+    (`PlayersAdded`), keeps it in a server-half table and sends it with
+    `ClientCall(p, "client.setToken", token)` to that player only; the client passes it in
+    every `ServerCall`, and the server compares it with its table for the claimed id. Two
+    Workshop mods (an admin tool, a permissions manager) do this. Never put the tokens in
+    `shared` or a synced registry key (every client sees those), seed `math.random`
+    unpredictably, and do not `DebugPrint` them.
+  - **Engine-attributed input:** `InputPressed(action, p)`, `GetPlayerInteractBody(p)`,
+    `GetPlayerTool(p)` read on the server are the engine's own view of player p; driving an
+    action from them (a terminal opened by `interact`) needs no claimed id at all. (Inferred:
+    a client cannot send input for another player; not tested.)
+  - Validate every request anyway: is the player alive, near the thing, allowed it.
+- `shared` is visible to every client: keep per-player secrets and hidden game state in
+  server-half globals and send each player only their part with a targeted `ClientCall`.
+
+### Effects called by the server reach every client, call by call
+
+- The server half's `SpawnParticle` (with `Particle*` settings), `PointLight` and `DrawLine`
+  showed on the joined client (a green particle cloud, a light on the floor, a magenta line).
+  Server-side `LoadSound`/`PlaySound` reach clients too (the bridge relies on that, section 9).
+  So each such call made on the server is sent to every client.
+- How many bytes that costs could not be measured: Windows' per-process I/O counters of both
+  test windows stayed the same (about 63 KB/s of reads, no writes) with the server spawning 50
+  particles, a light and a line every tick as without; the game's network traffic does not
+  show there (probably carried by Steam's networking). What follows is reasoned from the
+  replication above, not measured in bytes.
+
 ### Registry switches the game reads (measured 2026-11-21, 2.2.0, multiplayer test host)
 
 Set with `SetBool(key, true)` from the host's client half; "per frame" means the game resets
@@ -333,6 +413,11 @@ metal cars spawned from XML:
 - **Joints and ropes attach only to shapes from the same `Spawn` call**, unless the fourth
   argument (`jointExisting`) is true, which lets them attach to shapes already in the scene. A
   prefab split over several `Spawn` calls loses the attachments across the split.
+- **`Spawn` makes every body dynamic unless `allowStatic` (third argument) is true**
+  (measured 2026-11-22, 2.2.0, multiplayer test host): a plain `<body>`, `<body
+  dynamic="false">`, a `<body>` inside a `<group>` and a bare `<voxbox>` all spawned with
+  `IsBodyDynamic` true, in the air and resting on the ground; housings meant to stay put fell
+  over. With `allowStatic` true a plain `<body>` stayed static.
 - `Spawn("builtin-<id>:path.xml", t)` spawns a built-in mod's prefab from any mod's script; an
   inline `<instance file="builtin-...">` inside an XML string spawns nothing.
 - `GetRopePointPosition` returns nil in the frame the rope was spawned; shape bounds work.
@@ -515,6 +600,11 @@ Probe: `playground/voxscript/probe.lua`, placed twice in the playground's `main.
 
 ### Bodies moved by script
 
+- **A hinge motor set in `server.init` right after `Spawn` did not turn its body** (measured
+  2026-11-22, 2.2.0, multiplayer test): `SetJointMotor(hinge, 0.4, 3000)` there left the
+  dynamic body asleep (`IsBodyActive` false, angular velocity 0). `SetBodyActive(body, true)`
+  followed by `SetJointMotor` again, from a later tick, turned it at 0.4 rad/s, and it kept
+  turning. Which of the two calls mattered was not separated.
 - **Constraint-driven bodies fall asleep.** A 545 kg body driven each physics step with
   `ConstrainVelocity` stalled against a 0.3 m ledge, went inactive, and the constraints no
   longer moved it, for many seconds. Calling `SetBodyActive(b, true)` before constraining,
@@ -544,6 +634,84 @@ Probe: `playground/voxscript/probe.lua`, placed twice in the playground's `main.
   bend around walkers that have already moved on. Measured with 14 walkers: 11 reached their
   target in 20 s with this, against 3 while they collided. Steering them apart everywhere
   (separation) brought the jam back in narrow tunnels; apply it only near the target.
+
+### Lifts, timed charges, explosive shapes (measured 2026-11-22, 2.2.0, multiplayer test)
+
+- **A prismatic joint lift:** a static rail body and a dynamic platform in one `Spawn` of a
+  `<group>`, the platform carrying `<joint pos="..." rot="-90 0 0" type="prismatic"
+  size="0.15" limits="0 5"/>` on the boundary between a tab of the platform and the rail.
+  `GetJointShapes` gave 2. **With `rot="-90 0 0"` positive movement is up** (+y).
+  `SetJointMotorTarget(joint, 4, 1.5, mass * 40)` (target in metres, max speed m/s, strength)
+  raised a 2712 kg platform 4 m in 3 s **with the host and a joined client standing on it**;
+  both rode up (feet 0.29 m above the platform body's origin all the way) and stayed on.
+  `SetBodyActive(platform, true)` first: a resting platform is asleep. `GetJointMovement`
+  returns the distance along the axis.
+- **`bomb=<seconds> bombstrength=<size>` on a thrown shape:** a 2 x 1 x 1 voxbox with
+  `bomb=2 bombstrength=1.2`, given a velocity, flew, landed and exploded about 2 s later
+  (scorch mark, its `bomb` tag counting down then gone). **The body handle stays valid with no
+  shapes left** (0 shapes, 0 voxels): delete it yourself.
+- **`explosive=<size>` on a static shape:** a 3 x 3 x 3 masonry voxbox (static body) tagged
+  `explosive=1.5` exploded as soon as `MakeHole` broke some of it, and all its voxels went.
+  It hurt the host about 6 m away (health to about 0.4); one rifle shot (`MakeHole(p, 0.08,
+  0.05)`) on a pocket tagged `explosive=1.6` set it off and killed a script-health bug 1.5 m
+  in front of it through the mod's own explosion handling.
+- `GetEvent("explosion", i)` on the host returns `pos, size` in the tick of the explosion:
+  enough to damage script-health bodies in range.
+- Player parameters: `GetPlayerParam("walkingSpeed")` read 7 and `"jumpSpeed"` 4 by default.
+  Per `script_defs.lua` both apply for one frame only (set them every tick).
+- In real use (Hive Breach, 2026-11-22): a lift platform on such a joint, driven up 8 m in 4 s
+  at the end of a countdown, carried the host, a joined client and a script-driven walker
+  (a 600 kg body held to the ground by `ConstrainVelocity`) up a carved shaft; nobody fell off.
+  Not checked by eye: `ShakeCamera` strength values, `SetPostProcessingProperty`
+  `saturation` / `colorbalance` changes from client code, `SetPlayerParam("walkingSpeed")`
+  set by the server for a joined client.
+
+### World-space sprites (`DrawSprite`) and UI mapped onto the world
+
+Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
+`playground/script/probesprite.lua`, `probeuiwall.lua`):
+
+- **`DrawSprite(LoadSprite(png), transform, w, h, r, g, b, a, depthTest)`** draws a flat,
+  perspective-correct quad in the world, in the transform's local x-y plane, readable from its
+  +z side. It worked from `client.tick`, `client.render` and `client.draw`. From
+  `client.postUpdate` it was missing in frames without a physics step (only 60 of 83 frames
+  at 83 FPS drew it): it flickers. Each frame's sprites must be drawn again next frame.
+- Sprites are **unlit**: full colour in daylight and in an unlit cave alike, like a backlit
+  display. Tint multiplies the image (a white image tinted is a coloured rectangle; game image
+  `gfx/white.png`).
+- `depthTest = true`: voxels in front hide the sprite (a sprite behind a terminal was cut
+  where the terminal stood). **But a sprite less than about 10 cm in front of a voxel face is
+  partly hidden by that face too**: at 1 cm most of a grid of sprites was gone, at 5 cm a
+  part, at 10 cm none, seen from 2 m and from 6 m alike. Give screens a housing whose back is
+  15 cm or more behind the image.
+- **Overlapping sprites:** they are blended without writing depth and drawn far to near by the
+  distance of their centres. A dark background rectangle with text on it, 9 mm behind the
+  text, covered every letter whose centre was farther from the camera than the rectangle's
+  centre (from an angle, the left side and lower rows vanished). Sprites must not overlap;
+  draw a background with voxels (the housing's back plate) instead.
+- Cost: 1000 sprites per frame (with the Lua loop placing them) added about 0.2 ms to a
+  12 ms frame; 5000 added about 5.6 ms and the game became CPU-bound. A screen of 50 to 100
+  sprites is negligible.
+- Paths: a mod's own image `"MOD/gfx/x.png"`; another local mod's `"MOD/../<folder>/x.png"`;
+  transparent PNG pixels stay transparent. `"local-<mod id>:x.png"` and a plain relative path
+  (`"../<folder>/x.png"`) did not load: `LoadSprite` still returned a handle, and the quad
+  showed a grey and white checkerboard, as it does for a missing file (measured 2026-11-22,
+  2.2.0, multiplayer test host, `playground/script/probesprpath.lua`).
+- **No source rectangle:** `DrawSprite` draws the whole image. Four extra arguments after
+  `fogAffected` (0.5, 0, 1, 0.5, as a UV rectangle would be) changed nothing. A font or icon
+  atlas cannot be cut: one image per glyph (measured 2026-11-22, 2.2.0).
+- Sprite text through a library that reuses one transform table per screen: 5000 characters
+  (about 4100 sprites) a frame added about 1.7 ms to a 10.5 ms frame, 1000 characters nothing
+  measurable (2026-11-22, 2.2.0, multiplayer test host, RTX 4070 laptop; Teardown Screens
+  mod, `tests/perf.lua`). Allocation per sprite matters: compare the 5.6 ms above.
+- **UI on a world rectangle:** in `client.draw`, `UiWorldToPixel` of three corners, then
+  `UiTranslate(top-left)`, `UiRotate(-phi)`, `UiScale(sx, sy)`, `UiRotate(-theta)` (the
+  singular value decomposition of the corner vectors; **`UiRotate(a)` turns the opposite way
+  to a mathematical rotation by a in the y-down UI space**, i.e. counter-clockwise on screen)
+  put UI content onto the rectangle: text, rects, bars, and `UiClipRect` clipped along the
+  tilted edges. It is affine only: seen from a metre or two at an angle, the far corner was
+  far off the real rectangle (no perspective), and walls never hide it. Fine for a small or
+  distant panel seen nearly head-on; for displays in the world, use sprites.
 
 ### Client-side entities and animation
 
@@ -706,6 +874,34 @@ Probe: `playground/voxscript/probe.lua`, placed twice in the playground's `main.
   give it a hook such as a registry key it polls (`level.<mod>.request = "MOD/x.xml"`).
 - `#include` is resolved by the engine before Lua runs, relative to the script; a missing
   include keeps the whole script from loading.
+- **Include paths, measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
+  probes `playground/script/probeinc_*.lua` spawned into a level):**
+  - Relative paths are resolved against the **top script's folder, also inside included
+    files**. An `#include "inner.lua"` inside a file included from another folder loaded the
+    `inner.lua` beside the top script (an `inner.lua` existed in both folders). A library that
+    includes its own parts by relative path only works where it sits beside the top script.
+  - `..` works and may leave the mod: `#include "../../<other mod folder>/x.lua"` from
+    `<mod>/script/` loaded another local mod's file (through junctions too: the path is
+    resolved as a string under `Documents/Teardown/mods`).
+  - `#include "MOD/..."` and `#include "local-<mod id>:..."` do not work (the script did not
+    load).
+- `..` in engine paths is not sandboxed: `HasFile("MOD/../../../../../../Program Files
+  (x86)/Steam/steamapps/workshop/content/1167630/<id>/info.txt")` from a local mod was true.
+- `MOD/` belongs to the script that runs, not to the file: a script file of the playground mod
+  spawned by the bridge's script (`Spawn('<script file="MOD/../mcp-playground/...">')`) saw the
+  bridge's files under `MOD/` (measured 2026-11-22).
+- **Workshop mods** load from `<Steam library>/steamapps/workshop/content/1167630/<workshop
+  id>/` (log: `Loading: .../workshop/content/1167630/<id>/main.xml`; their `MOD/` paths resolve
+  there, e.g. `Couldn't find sound bank .../1167630/<id>/npcs/...`); local mods from
+  `Documents/Teardown/mods/<folder>`. Installed mods of one kind thus sit side by side, and a
+  relative path from one mod reaches another by its folder name (a Workshop mod's is its id).
+  A local mod and a Workshop mod are not side by side: to test a local mod against a
+  published one, copy the published mod's folder into `Documents/Teardown/mods` named by its id.
+- **A failed `#include` on one machine only stops that machine's script:** with the included
+  mod's folder renamed before a client joined (measured 2026-11-22, 2.2.0, multiplayer test),
+  the client still joined, but its copy of the including script did not load at all (no HUD,
+  no client half); host fine. Client log: `Script not found: <path>` and `Error loading
+  include: <path> from: <including file>`.
 - `LoadSound` on a missing file logs `Couldn't find sound bank <full path>` (paths of 600+
   characters survive). `LoadSound` called by the **server** half is replicated: every joined
   client loads the same sound, also players who join later.
@@ -763,6 +959,12 @@ Probe: `playground/voxscript/probe.lua`, placed twice in the playground's `main.
 - The host hashes each mod's folder and compares with the client ("Calculated hash for mod").
   A file that changes in a mod folder during start-up gets the client kicked: host log
   `Detected mod mismatch, will kick player`.
+- **Only loaded mods are hashed** (measured 2026-11-22, 2.2.0): the level's mod and the global
+  mods (log lines `Calculated hash for mod: Hive Breach`, `... MCP Bridge`), not a mod whose
+  files another mod only `#include`s. A client whose copy of such an included mod differed (a
+  file changed between the host's start and the client's late join) was not kicked and ran the
+  changed code while the host ran the original. Whether real Steam sessions check or fetch
+  required Workshop items for joining players was not tested.
 - Client join states in the host log: CONNECTING, CONNECTED, MODS_SYNCING, MODS_SYNCED,
   LOADING, LOADED, DETERMINISTIC_SYNCING, INITED, REPLICATION_CAUGHT_UP, PLAYING.
 - Villa Gordon: host in play after ~15 s, client in after ~25 s. A heavy mod: minutes.
@@ -802,6 +1004,19 @@ Probe: `playground/voxscript/probe.lua`, placed twice in the playground's `main.
   (the multiplayer test loads it by itself).
 - `StartLevel(mission, path)`: `data/level/hub.xml` was loaded as
   `data/level/data/level/hub.xml` and failed; the next load dropped to the main menu.
+- **`StartLevel(mission, file, layers)` with the file name alone works**, also in the
+  multiplayer test (2026-11-22, 2.2.0): `StartLevel("hub10", "hub.xml", "part1 v10")` from the
+  host's client half (bridge `run_lua` `side: client`, started from the MCP Playground) loaded
+  the campaign hub (`game.levelid` `hub10`, path `data/level/hub.xml`) on the host within a
+  second, and the joined client followed by itself (back in the player list as player 2,
+  ready, about 5 s later). The bridge kept answering on every side, since it is a global mod.
+  The hub showed the host machine's campaign progress (score, rank, cash) and its computer
+  screen (`data/ui/terminal.lua`) worked. The game starts it the same way: `startHub()` in
+  `data/game.lua` calls `StartLevel("hub" .. v, "hub.xml", "part1 v" .. v)` (v < 20), `"part2
+  v" .. v` (20 to 29) or `StartLevel("hub" .. v, "hub_carib.xml", "v" .. v)` (30 to 38), v
+  being the campaign's progress; built-in levels are compiled in `data/bin/` (`hub0.bin` to
+  `hub33.bin`), not shipped as XML. Mission levels: `gMissions[id].file` / `.layers` in
+  `data/missions.lua`.
 
 ### The engine profiler
 
@@ -923,8 +1138,8 @@ its own account. Facts it relies on that matter for mod work:
 
 - Whether sounds, particles and lights started by server code reach joined clients (weather
   set by the server does).
-- A working `StartLevel` path form for built-in and mod levels (see the Teardown-PhysX notes
-  in 11b for the likely one).
+- A working `StartLevel` path form for mod levels (built-in levels: the file name alone,
+  section 11).
 - More than one joined client; a real online session.
 - `Restart`, `SetPaused` (except `SetPaused(false)` from `client.render` while paused, which
   works, section 11), `Command`, `Menu`, `StartLevel`, `Delete`, `ClearKey`, session and

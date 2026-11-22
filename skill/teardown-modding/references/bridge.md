@@ -44,7 +44,7 @@ Most tools take `side` (`server` default, `client`, `draw`, `remote`): see SKILL
 | `save_game_code` | The running exe's decrypted code to `%LOCALAPPDATA%/Teardown/mcp_code/` (for `tools/port_names.py` and disassemblers; stays on this machine). Save one per build of each exe |
 | `perf_sample` | Over `seconds` (default 5): frame times from inside the game (avg, p50/p95/p99, frames over 33 / 50 ms), CPU and memory of the process, entity counts, GPU load |
 | `game_command` | `Command(...)`, e.g. `game.quicksave` |
-| `start_level` | `StartLevel`. Risky: a path the engine cannot load drops to the main menu |
+| `start_level` | `StartLevel`. Risky: a path the engine cannot load drops to the main menu. Built-in levels take the file name alone: the campaign hub is mission `hub10`, file `hub.xml`, layers `part1 v10` (worked in the multiplayer test from `side: client`; the joined client follows; quirks.md section 11) |
 
 ## 2. Recipes
 

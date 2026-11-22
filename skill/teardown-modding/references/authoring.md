@@ -21,6 +21,7 @@ teardown-mcp repo (`playground/`: `main.xml`, `prefab/buggy.xml`, `prefab/blaste
 11. A clickable menu
 12. Development loop that worked
 13. Game modes
+14. Finding and fixing what costs frame time
 
 ## 1. A level that loads
 
@@ -128,6 +129,30 @@ function client.draw()  local t = shared.thing  if not t then return end  ...  e
 - Per-shot effects: send plain numbers through `ClientCall` and build the `Vec` on the client.
   Load sounds in `client.init` (client-side loads are not replicated).
 
+### Sending effects to clients efficiently
+
+Effects (particles, sounds, lights, lines, sprites, camera shake, UI) change nothing the
+server needs to know. Measured (quirks.md section 4): when the server half calls
+`SpawnParticle`, `PointLight`, `DrawLine` or `PlaySound`, each call is sent to every client;
+`ClientCall(0, "client.f", args)` is one message per call, and `ClientCall(p, ...)` reaches
+only player p. So:
+
+- **Send the event, not the effect.** On a hit, call `ClientCall(0, "client.hit", x, y, z,
+  kind)` once; `client.hit` spawns the 20 particles, plays the sound and adds the light in
+  every game. Twenty server-side `SpawnParticle` calls would each travel.
+- **Never repeat an effect call from the server every tick.** A server `PointLight` or
+  `DrawLine` each tick is a message per tick per client. Send a start (and an end), or put a
+  value in `shared` and let each client draw from it every frame (a glow that follows a body:
+  the client reads the body's transform itself, nothing needs sending).
+- **Things each client can see for itself need no message at all:** a body's transform,
+  tags, `shared` values. Client code reads them directly (Hive Breach's legs, flares' sparks,
+  screens are drawn that way).
+- Effects only one player should see (their own hit marker, a private hint): `ClientCall(p, ...)`.
+- Keep `ClientCall` arguments small and plain (numbers, short strings); send a handle or an id
+  rather than a table describing a thing the client can look up.
+- What must stay identical for everyone (bodies, destruction, player health) belongs to the
+  server and replicates by itself; do not mirror it with calls.
+
 ## 5. HUD and world-space UI
 
 - The canvas is 1920 wide whatever the window: the multiplayer test's half-screen window is
@@ -152,6 +177,43 @@ end
 - Scripts draw in the order they are listed in the level, on one canvas: two scripts that
   both use the top-right corner overlap. Give each HUD its own region.
 - Fonts used: `regular.ttf`, `bold.ttf`.
+
+### Screens in the world that work in multiplayer
+
+Two ways, both shown on the host and a joined client (2026-11-22):
+
+- **`<screen>`** on a shape, with a version 1 script (`init`, `tick`, `draw` as plain
+  globals, full `Ui*` inside `draw`, 640 x 480 canvas). The script runs once, on the host;
+  joined clients see its picture, so every player sees the same screen, and it reads the
+  host's registry and entities directly (quirks.md section 1). It needs a shape to sit on,
+  and gives a full UI canvas (buttons, images, fonts) that any player can operate.
+- **`DrawSprite` quads** (below): no resolution, no shape needed, any size, on moving bodies,
+  drawn from your own `#version 2` client code and `shared` state, but text needs a font made
+  of images and the rules below.
+
+Built and run with sprites (facts in quirks.md "World-space sprites"):
+
+- A screen is a set of `DrawSprite` quads placed every frame from `client.render` (a screen
+  on a moving body then stays on it): coloured rectangles from `gfx/white.png`, and text from
+  one PNG per character (white on transparent, 2 px padding so filtering does not bleed;
+  `DrawSprite` has no source rectangle, so no atlas).
+- A ready library: the **Teardown Screens** mod (`C:\Projects\Teardown Screens`, linked as
+  `mods/teardown-screens`). Reference it in place:
+  `#include "../../teardown-screens/screens/screens.lua"` from `<mod>/script/` (relative to
+  the top script) and `TDScreens.init("MOD/../teardown-screens/screens")`; the folder name
+  becomes the library's Workshop id once it is published. Then `TDScreens.screen(t, w, h)`,
+  `s:text`, `s:rect`, `s:bar`, `s:line`, `s:image`, custom fonts from TTF or hand-drawn
+  bitmaps (`tools/make_font.py`), housings from `screens/housing.lua`. Its `README.md` and
+  `docs/REFERENCE.md` cover the risks (a missing library stops the whole script; the
+  multiplayer parity check does not cover included mods; quirks.md sections 7 and 10) and
+  copying the folder as the fallback.
+- Draw it from shared state in every game; skip it when the camera is far away.
+- Build a housing: a dark back plate at least 15 cm behind the image (it is the screen's
+  background), a bezel around the opening. No sprite may overlap another (no background
+  rectangle under text, bars as two side-by-side parts).
+- `PointLight` in front of the screen gives it a glow on the surroundings in the dark.
+- For interaction, keep the full-screen UI opened by `interact` (section 11): world UI
+  projected with `UiWorldToPixel` has no perspective and shows through walls.
 
 ## 6. Camera
 
@@ -523,3 +585,52 @@ The mpclassics modes are built on mplib (`unofficial-docs.md` section 6): `spawn
 `spawnSetDefaultLoadout`, `utilLoadLevelPlayerSpawns` (locations tagged `playerspawn`, else 64
 generated points), loot tiers from `ammospawn` locations, `countdownInit`, `statsTick`,
 `hudDrawGameModeHelpText`; `server.tick` calls `spawnTick`, `countdownTick`, `toolsTick`.
+
+## 14. Finding and fixing what costs frame time
+
+**Level assets: VoxTool.** Tuxedo Labs' own VoxTool (teardowngame.com/voxtool, version 0.87,
+a separate download with a GUI, documented in a Google Doc linked from that page; read
+2026-11-22, not used here yet) turns OBJ/FBX models, heightmaps and images into `.vox`, and
+for optimization: splits a model into a target number of shapes that fit its visible voxels
+(Optimization: Target Count, Method Model or Terrain), hollows models (Hull), fixes
+connectivity, rescales by whole factors, and compresses `.vox` (not readable by MagicaVoxel
+afterwards). Its docs give two rules of thumb: lag when something breaks usually means a shape
+whose box is too large (the engine processes the empty space too; split it), constant lag
+usually too many shapes (keep a scene around 5,000). The first agrees with our Spawn-cost
+measurement (quirks.md, "Spawn and prefabs").
+
+
+From an optimization pass on a co-op mod (Hive Breach, 2026-11-22, 2.2.0, multiplayer test
+host, a wave of 20 walking bodies with client-animated legs).
+
+**Measure, per callback.** Scripts cannot time themselves: the sandbox has no `os` table (no
+`os.clock`), and `GetTime()` is game time. Use:
+
+1. `perf_sample` for frame times (median, 95th percentile, frames over 33 ms) before and
+   after, in the same situation;
+2. the engine profiler (bridge.md): its Lua list gives each script's ms per frame; pause,
+   click the script, scroll the panel, and read average and peak per callback (Tick, Update,
+   Post physics update per half, Render, Draw).
+
+Compare like with like: the same wave, the bodies at the same distance and on screen or not.
+Physics time alone moved from 0.6 to 5 ms between two moments of one wave.
+
+**What it found, and what fixed it:**
+
+- `client.render` placing about 300 client-side parts (20 rigs) every frame: 4.2 ms average,
+  8.6 ms peak, the biggest single cost. **Level of detail**: rigs outside a cone around the
+  view direction are placed every 8th frame, rigs on screen every frame within 15 m, every 2nd
+  frame to 30 m, every 3rd beyond; skipped frames add their dt to the next update. With the
+  bodies piled around the player (all close and on screen, the worst case) render fell to
+  2.2 ms average, 5.2 ms peak. Cost per part placed: about 10 µs (two-bone IK, `QuatLookAt`,
+  `SetBodyTransform`). Parts of a rig that comes on screen may be up to 8 frames stale for
+  that moment.
+- Synced registry writes every tick (status strings for test tools, `SetString(k, v, true)`
+  with `string.format`, several keys): the server tick average went from 0.70 to 0.35 ms when
+  they were written only on change. A synced write goes to every client; write it when the
+  value changes, and round values that would otherwise change every tick.
+- Frame times over all: median 14.2 ms to 12.1 ms, 95th percentile 25.6 to 18.8 ms.
+- Not fixed: generating a level with many brush edits per tick spikes frames over 33 ms. That
+  was acceptable behind a progress screen; elsewhere lower the edits per tick.
+- Cheap enough to leave alone (measured): about 60 `DrawSprite` quads a frame for screens
+  (1000 cost about 0.2 ms); `FindBodies(tag, true)` per frame for a tag with 20 bodies.

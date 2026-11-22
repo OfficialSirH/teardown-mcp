@@ -104,6 +104,16 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
 - **A `<vox>` without `pos` is centred on its body origin**, height included: a model built
   standing on z = 0 hangs half its height below the origin.
 - **`server.postUpdate` / `client.postUpdate`** run once per physics step, after it.
+- **`<screen>` works in multiplayer**: its version 1 script runs once, on the host, and every
+  player sees that picture (in sync, operated by any player). For displays made of `DrawSprite` quads instead
+  (authoring.md section 5): no two sprites may overlap, and keep 10 cm or more of air between
+  a sprite and any voxel face behind it.
+- **`ServerCall` does not say who called.** The player id is an ordinary argument any client
+  can fake, so `IsPlayerHost(p)` on it proves nothing. For host-only actions let the host's
+  client half write a registry key its server half reads; for per-player rights use a token
+  sent with a targeted `ClientCall` (quirks.md section 4).
+- **Effects the server calls are sent to every client, call by call.** Send one `ClientCall`
+  per event and let clients make the particles, sounds and lights (authoring.md section 4).
 - **Events do not all reach joined clients:** `playerhurt` and `playerdied` do; `explosion`
   and events a server script posts with `PostEvent` reach only the host. `SetPlayerHealth(0)`
   posts no `playerdied` (damage through `ApplyPlayerDamage` does). Arguments: quirks.md,
@@ -122,7 +132,7 @@ something new (see "Extending this knowledge" there).
   the best usage examples.
 - `references/authoring.md` - patterns that were built and run: a level that loads, shapes and
   a wheeled vehicle from XML, server logic with client presentation, HUD and world-space UI,
-  camera, weather, shooting, joints and triggers, a custom hand tool, a clickable menu. Read it before writing a
+  camera, weather, shooting, joints and triggers, a custom hand tool, a clickable menu, screens that work in multiplayer, finding and fixing what costs frame time. Read it before writing a
   new script, prefab or level.
 - `references/quirks.md` - measured engine behaviour: script model, wrong-side calls, registry
   and `shared` propagation, entities and handles, files and the Lua sandbox, logs, the
