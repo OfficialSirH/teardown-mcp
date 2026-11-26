@@ -114,6 +114,8 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
   sent with a targeted `ClientCall` (quirks.md section 4).
 - **Effects the server calls are sent to every client, call by call.** Send one `ClientCall`
   per event and let clients make the particles, sounds and lights (authoring.md section 4).
+  For a player's own action (firing a tool), play their feedback from their own client's
+  input check at once, not after the server's call comes back (authoring.md section 10).
 - **Events do not all reach joined clients:** `playerhurt` and `playerdied` do; `explosion`
   and events a server script posts with `PostEvent` reach only the host. `SetPlayerHealth(0)`
   posts no `playerdied` (damage through `ApplyPlayerDamage` does). Arguments: quirks.md,

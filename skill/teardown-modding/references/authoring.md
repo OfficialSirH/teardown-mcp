@@ -152,6 +152,12 @@ only player p. So:
   rather than a table describing a thing the client can look up.
 - What must stay identical for everyone (bodies, destruction, player health) belongs to the
   server and replicates by itself; do not mirror it with calls.
+- **The player's own action plays at once on their own client** (official tutorial, part 7):
+  input goes to the server, the server acts and calls back, and over a real network that
+  round trip shows as input lag. Detect the same input in `client.tick` and play the
+  sound, flash and recoil there; the server does only the consequence (damage, spawning) and
+  tells the other players. Section 10 has the pattern. The local multiplayer test has almost
+  no latency, so it does not show the lag.
 
 ## 5. HUD and world-space UI
 
@@ -364,6 +370,31 @@ function client.tick(dt)
 end
 ```
 
+- **Responsive firing** (official tutorial, part 7: "all our internal tools are implemented
+  this way"): run the input check twice, on the server for the effect on the world and in
+  the client for the player's own feedback, so nothing waits for a network round trip:
+
+  ```lua
+  function client.tick(dt)
+  	if GetPlayerTool() == "mcpblaster" and InputPressed("usetool") then
+  		PlaySound(fireSound, GetCameraTransform().pos)       -- this player, now
+  	end
+  end
+  function client.blasterBeam(p, ...)                       -- from the server's fire()
+  	if p ~= GetLocalPlayer() then PlaySound(fireSound, ...) end   -- the others, a moment later
+  	-- the beam itself to the real hit point, for everyone
+  end
+  ```
+
+  The client's check must match the server's (tool, ammo, health, fire rate) or a player
+  hears shots the server never fired. Ammo the server keeps in `shared` reaches the client
+  late, so count the client's own unconfirmed shots against it.
+  *Observed* (2026-11-26, 2.2.0, multiplayer test, an automatic rifle with this pattern, 12
+  shots each): on the joined client all 12 were predicted and confirmed one to one. On the
+  **host** 2 of the server's calls arrived before that frame's `client.tick` had made its
+  prediction, as if the server's `ClientCall` reaches the host's client half within the same
+  frame. Treat a confirmation that comes with nothing pending as the shot itself: play it and
+  restart the client's fire timer, or the host hears that shot twice.
 - **Without `SetToolTransform` every frame the tool sits exactly at the camera**: the whole
   view was the colour of the barrel. The `eye_space` locations alone do not place it (the
   built-in tools use `script/toolanimation.lua` or their own `SetToolTransform`).

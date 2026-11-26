@@ -252,6 +252,11 @@ or `"script/mp/lib/tools.lua"`). An example mode with a `gamemodes.txt` is
 `mods/contentgamemodeexample`. The site documents each function from those files' comments;
 read the files themselves for exact behaviour.
 
+The official tutorial (part 9) adds: Tuxedo Labs' own modes all use it, it is open source
+(a GitHub repository linked under that video), each module can be used without the others,
+and the way to use it is to put a copy in your own mod folder. `#include
+"script/mp/lib/..."` reaches the game's copy instead (path rules: quirks.md section 7).
+
 | Module | Server | Client |
 |---|---|---|
 | countdown | `countdownInit(s)`, `countdownTick(dt)` (players locked while it runs) | `countdownDraw()`; `countdownDone()`, `countdownGetTime()` |

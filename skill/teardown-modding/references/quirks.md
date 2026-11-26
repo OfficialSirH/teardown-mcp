@@ -34,6 +34,11 @@ items are listed at the end. Re-measure after a game update: the probes are in
 - `#version 2` scripts have a server half and a client half. Each half is its own Lua state:
   the server state has a `server` table and no `client` table, the client state the reverse.
   Both have `shared`. Globals set in one half do not exist in the other, also on the host.
+  The official multiplayer tutorial (part 10, "Advanced topics") says how: the whole file is
+  loaded in both states, then the server state drops the `client` table and the client state
+  the `server` table. So top-level code and globals outside those two tables run and exist in
+  **both** states, as two unsynchronized copies; Tuxedo Labs recommend keeping a half's
+  globals inside its own table (`server.ammo = {}`) to avoid name clashes.
 - `Ui*` functions (138 of them) are `nil` everywhere except inside `client.draw()`. Checking
   `type(UiText)` in `client.tick` gives `"nil"`. `UiWidth()`/`UiHeight()` in the multiplayer
   test's half-screen window returned 1920 x 2280.
@@ -179,8 +184,9 @@ Notes:
   worked the same in both halves.
 - Effects are fine from both halves: `PlaySound`, `PlayLoop`, `SpawnParticle`, `PointLight`,
   `DrawLine`, `DebugLine`, `DebugCross`, `DebugWatch`, `DrawSprite`, `DrawBodyOutline`,
-  `DrawShapeOutline` all ran without complaint on server and client. Whether a server-side
-  effect is seen or heard on joined clients was not checked.
+  `DrawShapeOutline` all ran without complaint on server and client. Called on the server they
+  also show on joined clients, each call sent over the network (section 4, "Effects called by
+  the server").
 
 ## 3. Functions that cannot be used at all
 
@@ -226,7 +232,10 @@ to use `ServerCall`. `SetString("game.x", v)` on an unknown `game.` key works on
 `shared` is **per script**: each script file has its own table. The bridge's `shared` is not
 a mod's `shared`, so a mod's shared state cannot be read from outside; mirror it to the
 registry. Within a script, nested writes (`shared.t.n = shared.t.n + 1`, `shared.t.list[1] =
-"x"`) take effect at once and reach host client and joined client.
+"x"`) take effect at once and reach host client and joined client. Every change is sent to
+every client (official tutorial, part 4): keep `shared` small and change it no more often
+than needed; a value that changes every frame belongs in a client computation, not in
+`shared`.
 
 *Observed:* a one-frame registry pulse set in one script's `update` can be missed by another
 script that reads the registry less often; such readers must latch the value.
@@ -236,6 +245,11 @@ script that reads the registry less often; such readers must latch the value.
 
 `ServerCall("server.fn", ...)` from a client and `ClientCall(playerId, "client.fn", ...)` from
 the server both ran. The function must be defined in the same script file.
+
+From the official tutorial (parts 5 and 6; not measured here): a `ServerCall` returns
+nothing and does not wait; it may run on the server several frames later, but **calls from
+one client run in the order they were sent**. Arguments of both calls are sent over the
+network and rebuilt on the other side, so pass few and small ones.
 
 ### ServerCall, ClientCall and who is calling (measured 2026-11-22, 2.2.0, multiplayer test)
 
@@ -736,6 +750,10 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
   such bodies moved per frame (14 bodies with 14 parts each) ran at 67 FPS on the host and
   73 on the joined client. Make the parts from unphysical palette entries so they do not
   collide.
+- The game does this itself (official tutorial, part 10): the player character models are
+  local to each client and not synchronized, and small debris is local too, so its pieces
+  can lie in different places in each game (matches the local debris measured in
+  "Destruction and debris").
 - Client code sees server tags: `FindBodies("tag", true)` and `GetTagValue(b, "key")` on the
   joined client found server bodies and their tag values.
 - Hand-animated falling parts: before the landing raycast call `QueryRequire("static")`, or
@@ -968,6 +986,9 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
 - Client join states in the host log: CONNECTING, CONNECTED, MODS_SYNCING, MODS_SYNCED,
   LOADING, LOADED, DETERMINISTIC_SYNCING, INITED, REPLICATION_CAUGHT_UP, PLAYING.
 - Villa Gordon: host in play after ~15 s, client in after ~25 s. A heavy mod: minutes.
+- The windows can stay open while a script changes (official tutorial, part 8): **F5 or
+  Restart in the host's pause menu** reloads the level and reconnects the clients. The
+  bridge's `reload_scene` does the same from a script (`Restart()`, section 11).
 - Started on a level other than the mod's `main.xml`, `game.levelid` is empty.
 - The windows run `teardown_modtest.exe`, not `teardown.exe` (process watchers must look for
   that name), and **write no crash report when they die**: the window closes and the log stops.
