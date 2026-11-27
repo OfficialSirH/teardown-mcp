@@ -88,7 +88,9 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
 - **Clients cannot modify entities the server created** (`SetBodyTransform`, `SetTag`,
   `SetLightEnabled`, ...): that one does raise an error, "invalid attempt to access server
   authored entity from client script". A client can `Spawn` its own entities; they get negative
-  handles and exist only on that machine.
+  handles and exist only on that machine. The host's server half sees the host's own ones,
+  among them every player's character model: a server loop over `Find*("", true)` that moves
+  or deletes things must skip handles below 0.
 - **Player ids:** host is 1, the first client 2. `0` or omitted means "host" in server code and
   "the local player" in client code.
 - **Testing multiplayer:** the multiplayer test compares each mod's files between host and

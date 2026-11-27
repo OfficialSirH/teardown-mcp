@@ -135,8 +135,11 @@ send_input { "actions": [
 - In a vehicle: `w` / `s` drive, `a` / `d` steer, `e` gets in and out.
 - `esc` opens the pause menu. In single-player scripts stop there except `client.render`, so
   only `side: client` commands answer; in the multiplayer test everything keeps running. A
-  second `esc`, a click on Continue, or `run_lua` `side: client` `SetPaused(false)` closes it;
-  `screenshot` shows which.
+  second `esc`, a click on Continue (hold it 300 ms: a 120 ms click was missed), or `run_lua`
+  `side: client` `SetPaused(false)` closes it; `screenshot` shows which.
+- `registry_set` / `registry_get` on `savegame.mod.*` reach the **bridge's** own save data,
+  not the mod under test's: give a mod a `level.*` debug switch if it must be driven from
+  here.
 - Key combos: join names with `+`, pressed in order and released in reverse.
 - **The engine profiler** (CPU per system and per Lua script, per-callback graphs, a log
   viewer and a live registry viewer): `{ "key": "shift+alt+f3" }` opens, `{ "key": "f3" }`

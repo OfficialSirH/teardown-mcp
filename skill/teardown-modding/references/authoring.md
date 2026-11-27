@@ -628,7 +628,10 @@ connectivity, rescales by whole factors, and compresses `.vox` (not readable by 
 afterwards). Its docs give two rules of thumb: lag when something breaks usually means a shape
 whose box is too large (the engine processes the empty space too; split it), constant lag
 usually too many shapes (keep a scene around 5,000). The first agrees with our Spawn-cost
-measurement (quirks.md, "Spawn and prefabs").
+measurement (quirks.md, "Spawn and prefabs") and with a hole-cost measurement: holes in a
+44.5M-cell, 6 % filled voxagon cost 200+ ms frames, holes in a thin shape of a million voxels
+nothing (quirks.md, "Destruction and debris"). A voxagon can be cut into tiles along the
+10 cm grid without changing its voxels (same section).
 
 
 From an optimization pass on a co-op mod (Hive Breach, 2026-11-22, 2.2.0, multiplayer test

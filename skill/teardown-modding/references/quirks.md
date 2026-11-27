@@ -56,6 +56,12 @@ items are listed at the end. Re-measure after a game update: the probes are in
   things on a moving body sees its current position there. A callback assigned later from
   another chunk (`server.postUpdate = f` from the bridge's `run_lua`, after init) was never
   called: define it when the script loads.
+- **Order within a frame: `server.tick` first, then `server.update` and `server.postUpdate`
+  for each physics step** (measured by the Mors Longa project, 2026-11-26, 2.2.0,
+  single-player, about 30 FPS with 2 steps a frame; a probe recording each call:
+  `T U P U P T U P U P ...`; `playground/script/probeorder.lua`). So what `update` does (a
+  world shift, say) comes after every script's `tick` of that frame, and a flag `update` sets
+  cannot hold back that frame's `tick` work.
 - **Other callbacks `script_defs.lua` leaves out** (measured 2026-11-21, 2.2.0, multiplayer
   test host + joined client, with a probe script spawned at runtime:
   `playground/script/probecallbacks.lua`, results in the registry):
@@ -373,6 +379,25 @@ teardown.exe, next to each other): `playerhurt`, `playerhit`, `playerdied`, `exp
 - Client code can `Spawn`. The handles are **negative** (-593), the entity exists only on that
   machine, and that client can `Delete` it. A body spawned by the host's client half is
   findable from the host's server half (same process); one spawned on the remote client is not.
+- **So the host's server half lists the host's own client-side entities** (measured by the
+  Mors Longa project, 2026-11-26, 2.2.0, multiplayer test, Villa Gordon; confirmed here
+  2026-11-27 in the MCP Playground): in an untouched level `FindBodies("", true)` on the
+  server returned about 50 negative-handle bodies (`FindShapes` 64 shapes), the character
+  models of both players (each game has its own copy of every player's model, about 25
+  bodies each) and the held tool. `QueryAabbShapes` over the whole level returned none of
+  them. Server code that loops over `Find*("", true)` (a world shift, a cleanup) therefore
+  also moves or deletes the host's local entities: **skip handles below 0**.
+- A server `SetBodyTransform` or `Delete` on a negative handle acts on the host's local
+  entity only; the joined client's entity with the same number was untouched. Negative
+  numbers match between machines only by chance (the same up to -516 in that test, different
+  after it). A deleted player-model body crashed neither game in the next minute; a moved one
+  was put back by the game's animation the next frame.
+- **Non-global `Find*` calls in a `#version 2` script are scoped to the script's own
+  prefab**, as in version 1 (Mors Longa project, 2026-11-26; probe
+  `playground/script/probefindscope.lua`): a `<script>` spawned with two bodies, two shapes and
+  a joint nested under it read `FindJoints()` 1 (level: 459), `FindBodies("")` 2 (1136),
+  `FindShapes("")` 2, `FindShapes("tag")` 2 of the level's 3. A global mod's script (the
+  bridge) gets 0 from the same calls. Pass `true` as the last argument to search the level.
 - `Spawn(xml, transform)` accepts an XML string as well as a prefab path and returns every
   created handle (body, shapes, scripts).
 - `MakeHole` on empty air returns 0.
@@ -466,6 +491,12 @@ metal cars spawned from XML:
 - `SetShapeLocalTransform` on a world-body shape costs about 0.28 ms; a pass over ~10 000
   shapes froze the game for 2 to 5 s.
 - A changed shape local transform is synced to clients; setting the same value again is not.
+- **A client's own static shapes move with the server's world body** (Mors Longa project,
+  2026-11-26, multiplayer test): a joined client spawned a `<voxbox size="5 5 5"/>` with
+  `allowStatic` (handle -591, body = the world body, handle 1); the server then moved the
+  world body 5 cm with `SetBodyTransform(GetWorldBody(), ...)`. On the client its own box,
+  the world body and a server static shape all moved by the same 0.05 m. So client-side
+  static decoration follows a script that shifts the world by moving the world body.
 
 ### Deleting things
 
@@ -606,11 +637,35 @@ Probe: `playground/voxscript/probe.lua`, placed twice in the playground's `main.
 - `MakeHole` on a small dynamic body can split it, and **the original handle may keep the
   small piece**: a script that kept driving the handle moved a sliver while the bulk fell
   away. Do not cut holes into bodies whose handle you keep using.
-- An `Explosion` also leaves **local debris in every game**: broken dynamic bodies with
-  negative handles (47 on the host, 53 on the joined client after one size-2.5 explosion),
-  besides the server's positive-handle pieces. A server-side cleanup never sees a joined
-  client's; each client's own script can `Delete` its own. Unbroken negative-handle dynamic
-  bodies near the players are their held tools: leave them alone.
+- An `Explosion` can also leave **local debris in each game**: broken dynamic bodies with
+  negative handles, besides the server's positive-handle pieces. Re-measured 2026-11-27
+  (2.2.0, multiplayer test, MCP Playground, `tools/lua/count_local_bodies.lua`): before, 50
+  negative bodies on each side, none broken, all within 4 m of a player (the character models
+  and held tools, see "Entities and handles"); one size-2.5 explosion in a static masonry
+  wall 6 x 4 x 0.6 m gave the server 21 new dynamic bodies and each game its own local pieces,
+  broken and away from the players: 11 on the host and 9 on the joined client at once, 18 on
+  each a few seconds later, and about a minute later 4 on the host (the game's debris cleanup)
+  while the client still had 18. (An earlier note here gave 47 and 53 local pieces; those
+  counts included the player models.) The Mors Longa project found none from five explosions
+  of size 2.5 and 3 against Villa Gordon masonry, checked about 1 s later. So local debris
+  exists but depends on the setup. A server-side cleanup never sees a joined client's; each
+  client's own script can `Delete` its own. Negative-handle bodies near the players are their
+  models and held tools: leave them alone.
+- **A hole costs according to the shape's bounding box, not its voxel count** (Mors Longa
+  project, 2026-11-26, 2.2.0; probe `playground/script/probeholecost.lua`, three
+  `MakeHole(p, 0.3, 0.2, 0.1)` every 0.25 s for 3 s at the shape's surface, frames timed with
+  `GetFps()`): a static breakable voxagon of 636 x 35 x 2000 cells (44.5M cells, 2.8M voxels,
+  6 % filled) gave average frames of 214 to 254 ms and single frames up to 2.5 s (30 to 53 ms
+  without holes). A 1-voxel-thick voxbox of 2000 x 1 x 816 (1.15M voxels) and a 162,785-voxel
+  tile made no difference. This matches VoxTool's rule that lag when something breaks means a
+  shape box is too large (authoring.md section 14): split big, mostly empty shapes.
+- **A voxagon can be cut into pieces without changing it** (Mors Longa project, 2026-11-26):
+  the same polygon clipped at a line of the 10 cm grid into two voxagons (same `pos`, `rot`,
+  `brush`, `object`, `extrude`) gave the same voxel count (67,536) and the same colour at every
+  interior voxel, also with the cut far from a multiple of the brush's repeat (the brush is
+  not anchored at the polygon's corner). About 1 % of voxels along the outline and the cut
+  differ by one voxel, against 0.4 % between two identical copies. A 44.5M-cell cliff cut into
+  53 tiles of at most 0.2M cells kept 2,893,310 of 2,893,450 voxels.
 
 ### Bodies moved by script
 
@@ -788,6 +843,11 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
   the joiner appears at the level's spawn point, not where the others are: a script must move
   them (wait a moment after `PlayersAdded`, then `SetPlayerTransform`; it worked 2 s after the
   join), and give them their tools. The same held for a rejoin under a new id (3).
+  **Synced registry keys and `shared` written before the join arrive too** (Mors Longa
+  project, 2026-11-26): with the host alone the server wrote `SetInt("level.x.synced", 42,
+  true)`, `SetInt("level.x.plain", 7)` and `shared.x = 5`; in the late joiner's game synced
+  was 42, plain 0 and `shared.x` 5. So writing a synced key or a `shared` value only when it
+  changes is safe for players who join later.
 - **`GetAddedPlayers()` / `GetRemovedPlayers()` report each join and leave once, per
   script** (2026-11-21, multiplayer test started with the host alone, then `mp_test_join`,
   `mp_test_stop` with `client_only`, `mp_test_join` again; a probe called both every tick,
@@ -950,14 +1010,20 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
 - A `#version`-less script in multiplayer is logged as `Single player script disabled`.
 - **A mod script's `print()` never reaches the log**, and `DebugPrint` only shows on screen.
   The way to write text into the log is a `LoadSound` of a missing file (section 7); give each
-  line a unique name (a counter) so every call is logged.
+  line a unique name (a counter) so every call is logged. Each such line costs memory until
+  the level ends (Mors Longa project, 2026-11-26): 20,000 server-side calls with distinct
+  missing files raised private memory by about 22 MB on the host and 19 MB on the joined
+  client, about 1 KB per line on each machine.
 - `log_0.txt` / `log_1.txt` are overwritten when the multiplayer test restarts: copy them first
   after a crash.
 - *Observed,* client log lines in multiplayer that point at a host / client mismatch:
   `shape is null in handlePaint` (paint for a shape the client does not have, such as one just
   deleted) and `Init for unknwown script` (sic; a script init for a script the client does not
   know, such as one spawned and deleted in the same tick; a spawn and delete in one tick also
-  dropped a joined client once).
+  dropped a joined client once). The Mors Longa project saw bursts of both after spawning and
+  deleting shapes in the same server tick several times within two minutes; that joined
+  client died (0xC0000005, no dump) about 1.5 min later, right after a prefab with scripts was
+  spawned. Cause not isolated: delete test entities in a later tick.
 - *Observed:* a sound loop started by the server reached a client as the host's absolute
   path (`Couldn't find sound loop: C:/Program Files (x86)/...` on a client whose mod was on
   another drive). Clients with the mod in another Steam library may not hear such loops.
@@ -994,6 +1060,20 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
   that name), and **write no crash report when they die**: the window closes and the log stops.
 - Two windows of a heavy mod used 10 to 12 GB of RAM together, often leaving 100 to 500 MB free;
   some test-window deaths may come from that setup rather than the mod.
+- *Observed* (Mors Longa project, 2026-11-26): **a heavy streaming mod crashed only in the
+  multiplayer test.** The same debug auto-travel (spawning road pieces, deleting up to 120
+  shapes a frame, moving the whole world 200 m every ~5 s) ran 20 km and 99 world shifts in
+  single-player (teardown.exe) without a crash, while 7 of 7 multiplayer-test runs, the host
+  alone (`players: 1`) included, died with 0xC0000005 within 31 s to 6 min, whichever mod
+  feature was switched off. Earlier dumps put the crash in the physics step
+  (`PhysicsUpdate` > ... > `ShapeInterpTransform`, reading freed memory). This points at the
+  multiplayer path, which replicates even with no client joined, under heavy spawn and
+  delete churn. Not isolated further.
+- In the multiplayer test's pause menu, a `send_input` click on Continue needed a 300 ms press;
+  a 120 ms one was missed (Mors Longa project). `SetPaused(false)` from `side: client` closed
+  the menu here (2026-11-27, MCP Playground: `game.paused` true, then false, no menu in the
+  screenshot); the Mors Longa project once saw it not close. If it stays open, click Continue
+  with `hold_ms: 300` or send `esc`.
 
 ## 11. Level loading, pause, menus
 
@@ -1127,6 +1207,9 @@ driven with `send_input`.
 - **Frame dt as `client.tick` sees it is capped at 1/30 s (33.33 ms):** frames that took longer
   report exactly 33.33, so hitches longer than that are invisible in dt (and
   `frames_over_50ms` from `perf_sample` is always 0). Count the frames at the cap instead.
+  Below 30 FPS every frame reads 33.33 ms, so `perf_sample`'s frame times say nothing there:
+  use frames per wall-clock second, or a spawned probe that reads `GetFps()` each tick to time
+  single frames (Mors Longa project, 2026-11-26).
 - Within one `batch` of bridge actions everything runs in the same game tick: waiting
   between them with `run_lua` does not let physics or timers move (bridge.md).
 
@@ -1157,8 +1240,6 @@ its own account. Facts it relies on that matter for mod work:
 - Gamepad input: `send_input` sends keyboard and mouse only; a virtual pad would need a
   driver such as ViGEm.
 
-- Whether sounds, particles and lights started by server code reach joined clients (weather
-  set by the server does).
 - A working `StartLevel` path form for mod levels (built-in levels: the file name alone,
   section 11).
 - More than one joined client; a real online session.
