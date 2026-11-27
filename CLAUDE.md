@@ -66,7 +66,10 @@ facts, `references/bridge.md` for the tools.
   then `python tools/mcp_call.py ping '{}' ping '{"side":"remote"}'`.
 - Before the first bridge command after 5 minutes without an answer (or after a failed call,
   or `mp_test_stop`), `Bridge::send` runs `diag::alive_check` (window open, not hung) and
-  fails at once without sending if the game is gone.
+  fails at once without sending if the game is gone. `diag::windows_check` runs before any
+  `side: remote` command and once a second while waiting (host window, plus the client's
+  while a remote result is missing), so a crashed window ends the call at once with its exit
+  code; `wait_players_except` uses it too once the client window was seen.
 - A child process started by the server must not inherit its stdio (see `keep_stdio_private`):
   a client waiting for end-of-output would hang on the game.
 - `send_input` takes the user's keyboard focus: say so before a run of input tests, pass

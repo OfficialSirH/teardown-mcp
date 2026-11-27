@@ -56,6 +56,10 @@ pub struct Bridge {
     /// sending when the game has not answered for ALIVE_RECHECK, so a session that comes back
     /// hours later learns at once that the game was closed instead of waiting for a timeout.
     pub alive_check: fn() -> Result<(), String>,
+    /// Checked once a second while waiting: are the windows that must answer still open
+    /// (`true`: the multiplayer test's client too)? A crashed game then fails the call at once
+    /// instead of after the response timeout.
+    pub windows_check: fn(bool) -> Result<(), String>,
     /// When the game last answered or the outside check last passed; None: check first.
     last_alive: Option<Instant>,
     /// When the game last really answered (for the message).
@@ -174,6 +178,7 @@ impl Bridge {
             log_state: State::new(),
             last_side_error: None,
             alive_check: || Ok(()),
+            windows_check: |_| Ok(()),
             last_alive: None,
             last_answer: None,
             side_re: Regex::new(r"(\S+: )?(\w+) is not available in (client|server) script").unwrap(),
@@ -369,17 +374,31 @@ impl Bridge {
             }
             self.last_alive = Some(Instant::now());
         }
+        // A remote command needs the joined client's game: when its window is gone (it crashed
+        // or left), say so now instead of after the response timeout.
+        if cmds.iter().any(|c| c.side == "remote") {
+            if let Err(e) = (self.windows_check)(true) {
+                return Err(format!("{e}. Nothing was sent."));
+            }
+        }
+        // Watch the host window while waiting only if it is there now (right after
+        // mp_test_start the windows have no titles yet).
+        let watch_host = (self.windows_check)(false).is_ok();
         self.log_mode = (self.detect_log)();
         let scene0 = self.read_state().map(|s| int(&s, "scene")).unwrap_or(0);
 
         let mut ids = Vec::new();
         let mut waits = Vec::new(); // ids of commands that wait for a scene
+        let mut remote_ids = Vec::new();
         for c in cmds {
             let id = self.next_id;
             self.next_id += 1;
             ids.push(id);
             if c.wait_scene {
                 waits.push(id);
+            }
+            if c.side == "remote" {
+                remote_ids.push(id);
             }
             self.pending.push((id, c));
         }
@@ -389,6 +408,7 @@ impl Bridge {
         let start = Instant::now();
         let mut last_progress = start;
         let mut last_note = start;
+        let mut last_window_check = start;
         let mut last_ack = 0;
         let mut loading_since: Option<Instant> = None;
         let mut scene_wait: Option<Duration> = None;
@@ -445,12 +465,25 @@ impl Bridge {
                     }
                 }
             }
+            let got = || -> Value {
+                Value::Array(
+                    ids.iter()
+                        .filter_map(|&id| Self::result_of(&st, id).map(|r| json!({"id": id, "result": r})))
+                        .collect(),
+                )
+            };
+            if now - last_window_check >= Duration::from_secs(1) {
+                last_window_check = now;
+                let remote_open = remote_ids.iter().any(|&id| Self::result_of(&st, id).is_none());
+                if watch_host || remote_open {
+                    if let Err(e) = (self.windows_check)(remote_open) {
+                        break format!("{e}. It closed while this call waited ({} s). Partial results: {}", (now - start).as_secs(), got());
+                    }
+                }
+            }
             let limit = if loading { t.scene } else { t.response };
             if now - last_progress > limit {
-                let got: Vec<Value> = ids
-                    .iter()
-                    .filter_map(|&id| Self::result_of(&st, id).map(|r| json!({"id": id, "result": r})))
-                    .collect();
+                let got = got();
                 break if loading {
                     format!(
                         "the scene did not report back within {} s after the reload was requested",
@@ -473,7 +506,7 @@ impl Bridge {
                         last_ack,
                         ids[0],
                         last_id,
-                        Value::Array(got)
+                        got
                     )
                 };
             }

@@ -191,6 +191,8 @@ or registry is then missing; write it with `registry_set` first if the level nee
 |---|---|---|
 | `Teardown is not running: no game window ... Nothing was sent` | The server looked before sending and found no game | Ask the user to start the game, or `mp_test_start`. Do not retry the same call |
 | `the game window "..." is not responding` | The game is hung (Windows' view) | `game_health`, `dump_game` |
+| `the multiplayer test's client ("TD - Client1", pid N) has exited with 0x...` | The joined client crashed or left, before or while a `side: remote` call (or a wait for it to join) ran. Host commands still work | `read_log` with `file: log_1.txt`, `crash_report`; `mp_test_join` for a new client. Do not retry remote calls until then |
+| `the game window "..." (pid N) has closed: exit code 0x...` | The host or single-player game ended while the call waited | `game_health`, `crash_report`; `mp_test_start` |
 | `X is not available in client script. The bridge blocked the call...` | Wrong side; nothing ran | Repeat with the side it names |
 | `no answer from the game within 20 s` | No level running, in a menu, mod not enabled, or that bridge half was stopped (or paused with a bridge mod older than 2026-11-21) | `screenshot`. If a log line is quoted, a wrong-side call stopped that half: `reload_scene` with the other `side`, or `mp_test_start` with `restart: true`. If the screenshot shows the pause menu, `send_input` a click on Continue; in the main menu, ask the user |
 | `the game stopped answering ...` | Same, after some commands had run | Same |
@@ -211,7 +213,11 @@ or registry is then missing; write it with `registry_set` first if the level nee
   milliseconds) before the first command after 5 minutes without an answer, after a failed
   call and after `mp_test_stop`; a closed or hung game is then reported at once and nothing is
   sent. It cannot tell from outside whether the open game is in a level or in the main menu:
-  that still shows as the 20 s timeout.
+  that still shows as the 20 s timeout. While a call waits it looks once a second whether the
+  host window is still open, and for `side: remote` calls the client window too (also before
+  sending one): a game that crashes or closes fails the call within about a second, with its
+  exit code. `mp_test_start`, `mp_test_join` and `wait_for_players` stop the same way when the
+  client's window closes while it joins.
 - One MCP session at a time should send commands; two at once can interfere.
 - `remote` exists only in the local multiplayer test (the client's game reads the same file
   on the same PC).

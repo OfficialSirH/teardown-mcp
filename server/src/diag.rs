@@ -163,6 +163,86 @@ pub fn alive_check() -> Result<(), String> {
     Ok(())
 }
 
+/// Checked while waiting for an answer (once a second, so window lookups only): are the
+/// windows that must answer still open? `remote`: the multiplayer test's client too. A window
+/// that closed is reported with its process's exit code when this server saw it running.
+pub fn windows_check(remote: bool) -> Result<(), String> {
+    if games(None).iter().all(|g| g.title == "TD - Client1") {
+        return Err(match exit_of(&["TD - Host", "Teardown"]) {
+            Some((title, pid, code)) => format!(
+                "the game window \"{title}\" (pid {pid}) has closed: exit code {code:#010x}{}",
+                meaning_suffix(code)
+            ),
+            None => "no game window (\"TD - Host\" or \"Teardown\") is open".to_string(),
+        });
+    }
+    if remote && games(Some("TD - Client1")).is_empty() {
+        let why = match exit_of(&["TD - Client1"]) {
+            Some((_, pid, code)) => format!(
+                "the multiplayer test's client (\"TD - Client1\", pid {pid}) has exited with {code:#010x}{}",
+                meaning_suffix(code)
+            ),
+            None => "the multiplayer test's client window (\"TD - Client1\") is not open".to_string(),
+        };
+        return Err(format!(
+            "{why}, so side=remote has no game to run in. read_log with file log_1.txt shows the client's log, crash_report the game's own crash report if it wrote one; mp_test_join starts a new client (the host keeps running)"
+        ));
+    }
+    Ok(())
+}
+
+fn meaning_suffix(code: u32) -> String {
+    match exit_meaning(code) {
+        "" => String::new(),
+        m => format!(" ({m})"),
+    }
+}
+
+/// The most recently seen ended process that had one of these window titles, without
+/// forgetting it (game_health and crash_report still report it). The window goes a moment
+/// before the process ends, so this waits up to a second for that.
+fn exit_of(titles: &[&str]) -> Option<(String, u32, u32)> {
+    for _ in 0..10 {
+        if let Some(x) = exit_of_now(titles) {
+            return Some(x);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+/// Keep an eye on a process this server started (before it has a window), so its exit can be
+/// told and its exit code read.
+pub fn watch(pid: u32, title: &str) {
+    remember(pid, title, "teardown_modtest.exe");
+}
+
+/// Exit code of a watched process that has ended; None while it runs (or if never watched).
+pub fn exit_code(pid: u32) -> Option<u32> {
+    let seen = SEEN.lock().unwrap();
+    let s = seen.iter().find(|s| s.pid == pid)?;
+    let mut code = STILL_ACTIVE;
+    unsafe { GetExitCodeProcess(s.handle as HANDLE, &mut code) };
+    (code != STILL_ACTIVE).then_some(code)
+}
+
+pub fn exit_text(code: u32) -> String {
+    format!("{code:#010x}{}", meaning_suffix(code))
+}
+
+fn exit_of_now(titles: &[&str]) -> Option<(String, u32, u32)> {
+    let seen = SEEN.lock().unwrap();
+    seen.iter()
+        .filter(|s| titles.contains(&s.title.as_str()))
+        .filter_map(|s| {
+            let mut code = STILL_ACTIVE;
+            unsafe { GetExitCodeProcess(s.handle as HANDLE, &mut code) };
+            (code != STILL_ACTIVE).then(|| (s.since, (s.title.clone(), s.pid, code)))
+        })
+        .max_by_key(|(since, _)| *since)
+        .map(|(_, x)| x)
+}
+
 /// Game windows, found by title; a window only counts when its process is a Teardown exe
 /// (a File Explorer window on the "Teardown" folder has the same title).
 pub fn games(only: Option<&str>) -> Vec<Game> {
@@ -201,7 +281,12 @@ static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
 fn remember(pid: u32, title: &str, exe: &str) {
     let mut seen = SEEN.lock().unwrap();
-    if seen.iter().any(|s| s.pid == pid) {
+    // A starting test client's window is titled "Teardown" before "TD - Client1": keep the
+    // latest title, which is the one an exit is looked up by.
+    if let Some(s) = seen.iter_mut().find(|s| s.pid == pid) {
+        if s.title != title {
+            s.title = title.into();
+        }
         return;
     }
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };

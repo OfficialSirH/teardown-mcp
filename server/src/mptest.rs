@@ -210,7 +210,8 @@ fn keep_stdio_private() {
 #[cfg(not(windows))]
 fn keep_stdio_private() {}
 
-fn spawn_exe(game_dir: &Path, args: Vec<String>) -> Result<(), String> {
+/// Start the test exe; returns its process id.
+fn spawn_exe(game_dir: &Path, args: Vec<String>) -> Result<u32, String> {
     keep_stdio_private();
     let exe = game_dir.join(EXE);
     if !exe.is_file() {
@@ -227,12 +228,13 @@ fn spawn_exe(game_dir: &Path, args: Vec<String>) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map(|_| ())
+        .map(|c| c.id())
         .map_err(|e| format!("cannot start {}: {e}", exe.display()))
 }
 
-/// The client window alone, to join a host that is already running (a late join).
-pub fn start_client(game_dir: &Path, appdata: &Path) -> Result<(), String> {
+/// The client window alone, to join a host that is already running (a late join). Returns
+/// the client's process id.
+pub fn start_client(game_dir: &Path, appdata: &Path) -> Result<u32, String> {
     spawn_exe(
         game_dir,
         ["-half_screen", "2", "-mod_test_client", "-logfile", &fwd(&appdata.join("log_1.txt"))]
@@ -252,7 +254,8 @@ pub fn kill_pid(pid: u32) {
         .status();
 }
 
-pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<(), String> {
+/// Returns the client's process id when a client was started.
+pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<Option<u32>, String> {
     let spawn = |args: Vec<String>| spawn_exe(game_dir, args);
     // Alone, the host gets a normal window instead of the left half of the screen.
     let mut host: Vec<String> = Vec::new();
@@ -271,7 +274,7 @@ pub fn start(l: &Launch, game_dir: &Path, appdata: &Path) -> Result<(), String> 
     host.push(fwd(&appdata.join("log_0.txt")));
     spawn(host)?;
     if !l.client {
-        return Ok(());
+        return Ok(None);
     }
-    start_client(game_dir, appdata)
+    start_client(game_dir, appdata).map(Some)
 }

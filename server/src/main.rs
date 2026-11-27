@@ -215,6 +215,9 @@ struct Server {
     log_dir: PathBuf,
     game_dir: PathBuf,
     response: Duration,
+    /// Process id of the multiplayer test client this server last started: a wait for it to
+    /// join ends as soon as that process exits.
+    client_pid: Option<u32>,
 }
 
 impl Server {
@@ -350,7 +353,11 @@ impl Server {
                     global_mods,
                     client,
                 };
-                mptest::start(&launch, &self.game_dir, &self.log_dir)?;
+                self.client_pid = mptest::start(&launch, &self.game_dir, &self.log_dir)?;
+                #[cfg(windows)]
+                if let Some(pid) = self.client_pid {
+                    diag::watch(pid, "TD - Client1");
+                }
                 // The windows take a few seconds to get their titles; the loop below checks.
                 self.bridge.set_alive(true);
 
@@ -441,7 +448,29 @@ impl Server {
     ) -> Result<Value, String> {
         let started = std::time::Instant::now();
         let t = Timeouts { response: self.response, scene: limit };
+        // Waiting for a joiner: once the test's client window has been seen, its closing (a
+        // crash while loading) ends the wait at once. Online clients have no window here.
+        let joiner = count >= 2 || !known.is_empty();
+        let mut client_seen = false;
         loop {
+            #[cfg(windows)]
+            if let Some(code) = self.client_pid.filter(|_| joiner).and_then(diag::exit_code) {
+                self.client_pid = None;
+                return Err(format!(
+                    "the multiplayer test's client (\"TD - Client1\") exited with {} after {} s of waiting for it to join. read_log with file log_1.txt shows its log, crash_report the game's own crash report if it wrote one; mp_test_join starts a new client (the host keeps running)",
+                    diag::exit_text(code),
+                    started.elapsed().as_secs()
+                ));
+            }
+            if joiner {
+                match (self.bridge.windows_check)(true) {
+                    Ok(()) => client_seen = true,
+                    Err(e) if client_seen => {
+                        return Err(format!("{e}. It closed after {} s of waiting for it to join.", started.elapsed().as_secs()));
+                    }
+                    Err(_) => {}
+                }
+            }
             let out = self.bridge.send(vec![make_cmd("ping", &json!({}), false)], &t, progress)?;
             let info = unwrap_result("ping", &out.results[0])?;
             let players = info["players"].as_array().cloned().unwrap_or_default();
@@ -572,7 +601,9 @@ impl Server {
             .as_array()
             .map(|ps| ps.iter().map(|p| p["id"].clone()).collect())
             .unwrap_or_default();
-        mptest::start_client(&self.game_dir, &self.log_dir)?;
+        let pid = mptest::start_client(&self.game_dir, &self.log_dir)?;
+        diag::watch(pid, "TD - Client1");
+        self.client_pid = Some(pid);
         let started = std::time::Instant::now();
         let secs = a["timeout_secs"].as_f64().unwrap_or(300.0).clamp(10.0, 7200.0);
         let info = self.wait_players_except(1, &known, Duration::from_secs_f64(secs), progress)?;
@@ -774,6 +805,7 @@ fn main() {
         log_dir,
         game_dir,
         response: Duration::from_secs_f64(response),
+        client_pid: None,
     };
     // Where results come back: "save" (savegame.xml), "log" (the game's log file), or by
     // default the log whenever the multiplayer test's host window is open.
@@ -785,6 +817,7 @@ fn main() {
     #[cfg(windows)]
     {
         server.bridge.alive_check = diag::alive_check;
+        server.bridge.windows_check = diag::windows_check;
     }
     if let Err(e) = server.bridge.install() {
         eprintln!("teardown-mcp: {e}");
