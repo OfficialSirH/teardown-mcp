@@ -37,7 +37,7 @@ Most tools take `side` (`server` default, `client`, `draw`, `remote`): see SKILL
 | `raycast` | From `origin` along `dir`, or from the player's camera |
 | `debug_print` | A line in the game's on-screen console |
 | `screenshot` | A game window: `window` is "TD - Host" (default when present), "TD - Client1" or "Teardown" |
-| `read_log` | End of a log file; `file` is `log.txt` (normal game, complete only after a normal exit), `log_0.txt` (test host), `log_1.txt` (test client), `log_sentry.txt` (the last crashed session); `level: error`, `contains` |
+| `read_log` | End of a log file; `file` is `log.txt` (normal game, complete only after a normal exit), `log_0.txt` (test host), `log_1.txt` (test client), `log_sentry.txt` (the last crashed session); `level: error`, `contains`; the bridge's own reply lines are hidden unless `bridge_lines: true` |
 | `game_health` | From outside the game: each game window's process (responding or hung, CPU, memory, threads), processes that ended since the last check with their exit code, the game's recent crash reports, GPU load. Works when the game is hung, paused, in a menu or gone |
 | `crash_report` | One of the game's own crash reports (`index` 0 = newest): message, Lua stack, native stack with function names where known, memory, the log up to the crash |
 | `dump_game` | Call stacks of a hung or slow game's main thread and busiest threads; `write_dump: true` adds a minidump file |
@@ -57,9 +57,16 @@ look_at    { "target": [0, 1, -22], "from": [6, 0.2, 10] }
 screenshot {}
 ```
 
-Lua errors appear in the log with file and line and as red text on screen. In the multiplayer
-test the host log also fills with `Couldn't find sound bank ...mcp-bridge/mcp...` lines: those
-are the bridge's own replies, ignore them (`contains` a word from the mod's path to filter).
+A Lua runtime error shows as red text on screen with its message and line number
+(`screenshot`); the log only gets `WARNING ... <script path>` for it, every time it happens,
+with no message (measured 2026-11-28). So: `screenshot` for the error, `read_log` with
+`contains: ".lua"` to see which script keeps failing. In the multiplayer
+test the log also fills with `Couldn't find sound bank ...mcp-bridge/mcpr_...` lines (hundreds
+a minute): those are the bridge's own replies. `read_log` hides them and says how many it hid
+(`bridge_lines: true` shows them; a server older than 2026-11-28 does not hide them: then
+always pass `contains`). To find your own mod's lines, `contains` its folder name; for missing
+sounds, `contains: "data/snd"` (game sounds) or `"Couldn't find sound"` (loops log
+`Couldn't find sound loop:`, one-shots `Couldn't find sound bank`).
 
 A moving target has moved on by the time the screenshot is taken: pass the entity handle as
 `target` and take the screenshot in the same turn, or look at where it is going.

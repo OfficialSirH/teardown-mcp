@@ -29,7 +29,12 @@ facts, `references/bridge.md` for the tools.
 | `tools/lua/` | Small Lua readers / helpers to run with `run_lua` `file` |
 | `tools/mcp_call.py` | Call the server from a script (tests, probes) |
 | `tools/probe/` | API probes whose results feed the skill; `README.md` there |
-| `tools/gen_api_index.py` | Regenerates `references/api-index.md` |
+| `tools/fetch_official_docs.py` | Downloads Tuxedo Labs' modding docs (API, Voxscript, modding and multiplayer guides, their images) into `skill/teardown-modding/references/official/` as Markdown; that folder is gitignored (their text, public repo). Re-run after a game update |
+| `tools/api_sides.py` | The measured side of each function, from `tools/probe/` results; used by the two scripts around it |
+| `tools/gen_api_index.py` | Regenerates `references/api-index.md` (needs `references/official/`: run the fetch first) |
+| `tools/gen_xml_reference.py` | Writes `references/game/xml.md` (gitignored): the editor's node help and property tooltips (plain strings read from teardown.exe, no code) plus every element and attribute in the game's own XML. Re-run after a game update |
+| `tools/vox.py` | Writes / reads MagicaVoxel `.vox` files with materials chosen by name (palette ranges, MATL glass and emissive, named objects) |
+| `tools/td_anim.py` | Writes / reads the game's animation files (`TD_ANIM`, `<animator file=...>`): skeleton and clips; fills missing bone tracks (a missing one crashes the game) |
 | `tools/fetch_unofficial_docs.py` | Downloads the Unofficial TD Docs data (site's `gh-pages` bundle) and lists what `api-index.md` lacks; feeds `references/unofficial-docs.md` |
 
 ## How it works (the parts that are easy to get wrong)
@@ -69,7 +74,10 @@ facts, `references/bridge.md` for the tools.
   fails at once without sending if the game is gone. `diag::windows_check` runs before any
   `side: remote` command and once a second while waiting (host window, plus the client's
   while a remote result is missing), so a crashed window ends the call at once with its exit
-  code; `wait_players_except` uses it too once the client window was seen.
+  code. `wait_players_except` also stops when the client process this server started
+  (`client_pid`, from `mptest::start` / `start_client`) exits, or its window was seen and
+  closed: the client's window is titled "Teardown" at first, and a host ping during a join
+  can outlast the moment it is titled "TD - Client1".
 - A child process started by the server must not inherit its stdio (see `keep_stdio_private`):
   a client waiting for end-of-output would hang on the game.
 - `send_input` takes the user's keyboard focus: say so before a run of input tests, pass

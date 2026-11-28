@@ -138,9 +138,10 @@ fn tools() -> Value {
         tool("perf_sample", "Measure performance over a few seconds while the game runs: frame times from inside the game (average, percentiles, frames over 33 / 50 ms), the game process's CPU and memory from outside, entity counts, and GPU load. Needs a running level. For which script costs what, open the engine profiler (see the skill).",
             json!({"seconds": {"type": "number", "description": "Length of the sample (default 5, 1..30)."},
                    "window": {"type": "string", "description": "\"TD - Client1\" measures the joined client's game; default the host / single-player game."}}), &[]),
-        tool("read_log", "Read the end of Teardown's log file (level loads, missing files/prefabs/sounds, disabled scripts). log.txt is written out completely only at a normal exit, so it can lag far behind the running game; log_sentry.txt is the log of the last session that crashed (written by the crash handler, with times and tags). In the multiplayer test the windows log to log_0.txt (host) and log_1.txt (client), written in 4 KB blocks. Lua runtime errors are not in it: use screenshot for those. Older sessions are in log_0.txt etc.",
+        tool("read_log", "Read the end of Teardown's log file (level loads, missing files/prefabs/sounds, disabled scripts). log.txt is written out completely only at a normal exit, so it can lag far behind the running game; log_sentry.txt is the log of the last session that crashed (written by the crash handler, with times and tags). In the multiplayer test the windows log to log_0.txt (host) and log_1.txt (client), written in 4 KB blocks. A Lua runtime error logs only a WARNING line with the script's path, every time it happens; its message and line number show only on screen: use screenshot for those. Older sessions are in log_0.txt etc.",
             json!({"lines": {"type": "integer", "description": "Lines from the end (default 80)."}, "contains": {"type": "string", "description": "Only lines containing this text (case-insensitive)."},
-                   "level": {"type": "string", "enum": ["all", "warning", "error"]}, "file": {"type": "string", "description": "Log file name (default log.txt)."}}), &[]),
+                   "level": {"type": "string", "enum": ["all", "warning", "error"]}, "file": {"type": "string", "description": "Log file name (default log.txt)."},
+                   "bridge_lines": {"type": "boolean", "description": "Also show the bridge's own reply lines (\"Couldn't find sound bank .../mcpr_...\", hundreds a minute in the multiplayer test; hidden by default)."}}), &[]),
     ])
 }
 
@@ -772,8 +773,18 @@ impl Server {
         let needle = a["contains"].as_str().map(str::to_lowercase);
         let level = a["level"].as_str().unwrap_or("all");
         let want = a["lines"].as_u64().unwrap_or(80).clamp(1, 2000) as usize;
+        let bridge = a["bridge_lines"].as_bool().unwrap_or(false);
+        let mut hidden = 0usize;
         let keep: Vec<&str> = content
             .lines()
+            .filter(|l| {
+                // The bridge's replies in the multiplayer test are failed LoadSound calls on
+                // <bridge folder>/mcps_..., mcpr_..., mcpp_... (mod/main.lua): hundreds a minute.
+                let own = !bridge && l.contains("Couldn't find sound")
+                    && ["/mcps_", "/mcpr_", "/mcpp_"].iter().any(|p| l.contains(p));
+                hidden += own as usize;
+                !own
+            })
             .filter(|l| match level {
                 "error" => l.contains(" ERROR "),
                 "warning" => l.contains(" ERROR ") || l.contains(" WARNING "),
@@ -782,7 +793,8 @@ impl Server {
             .filter(|l| needle.as_ref().map(|n| l.to_lowercase().contains(n)).unwrap_or(true))
             .collect();
         let from = keep.len().saturating_sub(want);
-        Ok(text(format!("{} ({} matching lines, showing last {}):\n{}", path.display(), keep.len(), keep.len() - from, keep[from..].join("\n"))))
+        let note = if hidden > 0 { format!("; {hidden} bridge reply lines hidden") } else { String::new() };
+        Ok(text(format!("{} ({} matching lines, showing last {}{note}):\n{}", path.display(), keep.len(), keep.len() - from, keep[from..].join("\n"))))
     }
 }
 

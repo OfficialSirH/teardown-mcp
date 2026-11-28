@@ -182,6 +182,12 @@ SetToolTransform SetToolTransformOverride ShakeCamera StopHaptic`
 
 Notes:
 
+- The official API reference tags 75 functions SERVER ONLY (42) or CLIENT ONLY (33). Compared
+  2026-11-28 (`tools/fetch_official_docs.py` prints the comparison): every function measured as
+  one-sided here carries the matching tag, and no tagged function was measured as callable from
+  both halves. The tagged ones this list lacks are internal or were not probed (`untested` in
+  `api-index.md`), so the official tag is the answer for those. What the docs do not say is
+  what a wrong-side call does (the silent stop above).
 - `GetCameraTransform` is the one read function in the list: server code that wants a camera
   must use `GetPlayerCameraTransform(playerId)`.
 - These came from calls with no arguments plus a second pass with valid arguments; the two
@@ -210,6 +216,13 @@ Notes:
 - Wrong property names raise errors: `GetProperty` "Unavailable property x",
   `GetEnvironmentProperty` "Unknown environment property x", `GetPostProcessingProperty`,
   `GetPlayerParam` "Unavailable player param".
+
+- Deprecated in the official docs (still present in 2.2.0; avoid in new code):
+  `RegisterListenerTo`, `UnregisterListener`, `TriggerEvent` (use `PostEvent` /
+  `GetEventCount` / `GetEvent`), `GetPlayerPos` (use `GetPlayerTransform`), and the player-rig
+  functions `ClearPlayerRig`, `SetPlayerRigLocationLocalTransform`, `SetPlayerRigTransform`,
+  `GetPlayerRigLocationWorldTransform`, `SetPlayerRigTags`, `GetPlayerRigHasTag`,
+  `GetPlayerRigTagValue`.
 
 `api-index.md` marks each function.
 
@@ -242,6 +255,14 @@ registry. Within a script, nested writes (`shared.t.n = shared.t.n + 1`, `shared
 every client (official tutorial, part 4): keep `shared` small and change it no more often
 than needed; a value that changes every frame belongs in a client computation, not in
 `shared`.
+
+**Key names are stored in lower case** (measured 2026-11-28, 2.2.0, multiplayer test server):
+after `SetInt("level.mcpCaseTest", 7)`, both `GetInt("level.mcpCaseTest")` and
+`GetInt("level.mcpcasetest")` gave 7, and `ListKeys("level")` listed `mcpcasetest`. Code that
+compares `ListKeys` results with a mixed-case name will not find it. The official API says
+node names may contain only a to z, digits, `.`, `-` and `_`, and that `options` and
+`savegame` are write-protected for mods except each mod's own `savegame.mod` (not measured
+here).
 
 *Observed:* a one-frame registry pulse set in one script's `update` can be missed by another
 script that reads the registry less often; such readers must latch the value.
@@ -357,6 +378,11 @@ teardown.exe, next to each other): `playerhurt`, `playerhit`, `playerdied`, `exp
 | `explosion` | position, size. `Explosion`, a broken `explosive` shape (size 1), a `bomb` (size 1), a `Shoot(..., "rocket")` hitting the ground (size 1.5) | host server and host client; **not the joined client** (whose `handleCommand` does get `explosion`, section 1) |
 | custom (`PostEvent(name, ...)`) | the values passed, types kept (`7, "seven", true`) | posted by the server: host server and host client; **not the joined client** |
 
+- The official API (Events category) documents four engine events, with an availability column
+  that matches the table above: `playerhurt` and `playerdied` "Server and Client",
+  `explosion` "Server only" (we saw it in the host's client half too, which runs on the
+  server's machine), and `projectilehit` (shape, point, direction; "Server only"), which a
+  `Shoot` bullet into a player did not trigger here.
 - Every event is readable in the tick it happened in, by both halves of the host.
 - A `Shoot` bullet hitting a player gave `playerhurt` only: no `playerhit` or `projectilehit`.
   `playerhit`, `projectilehit`, `memberadded`, `memberremoved` and the network events were not
@@ -459,6 +485,14 @@ metal cars spawned from XML:
   over. With `allowStatic` true a plain `<body>` stayed static.
 - `Spawn("builtin-<id>:path.xml", t)` spawns a built-in mod's prefab from any mod's script; an
   inline `<instance file="builtin-...">` inside an XML string spawns nothing.
+- **Other mods' prefabs in multiplayer** (measured 2026-11-28, 2.2.0, multiplayer test,
+  server half): `Spawn("<id>:path.xml", t)` for a mod outside the session raises a catchable
+  error, `Spawn('<path>') blocked in multiplayer: mod '<id>' is not listed in mods.available.`,
+  whether the mod is installed (a Workshop mod on disk) or not. `mods.available` in a session
+  holds only the built-in mods plus the mods loaded for it (authoring.md section 15). A
+  built-in mod's prefab (`builtin-drivetosurvive:prefab/designer_lamp.xml`, 6 entities) spawned
+  though that mod was not active. `Spawn("MOD/<missing>.xml")` raised nothing and returned an
+  empty table.
 - `GetRopePointPosition` returns nil in the frame the rope was spawned; shape bounds work.
 - **A rope from an XML string** (measured 2026-11-21, 2.2.0, multiplayer test):
   `<rope slack="..." color="r g b"><location pos="a"/><location pos="b"/></rope>`, the two
@@ -538,6 +572,9 @@ The one deletion that crashes is a script deleting its own entity (section 1).
   either. `IsShapeDisconnected` reported true on large carved shapes, yet `SplitShape(shape,
   false)` then made only a few shapes of 1 to 12 voxels, and `SplitShape(shape, true)` removed
   such residual voxels.
+- *Observed* by the skill-test session (2026-11-28, not isolated): right after `MakeHole` in
+  the same server call, `GetShapeVoxelCount` of the hit shape returned 0; a later call read 24.
+  Read voxel counts after holes in a later tick.
 
 ### Materials and .vox files
 
@@ -547,6 +584,11 @@ The one deletion that crashes is a script deleting its own entity (section 1).
   169-176 hardmetal, 177-184 hardmasonry, 185-192 ice**, 193-224 none, 225-240 unphysical,
   241-253 none, 254 unphysical, 255 none. (Older tables online with masonry 73-88 and
   hardmetal 153-168 are wrong for 2.2.0.) A MATL chunk's `_emit` shows as the emissive value.
+- **Emissive and glass come from MATL chunks** (measured 2026-11-28, 2.2.0, multiplayer test,
+  files written by `tools/vox.py`): a palette entry with MATL `_type=_emit`, `_emit=1`,
+  `_flux=1` glowed in the dark (it lit nothing around it, as the official guide says). A glass
+  entry (index 1-8) was see-through only with MATL `_type=_glass` (`_trans` 0.5 and 1.0 both
+  clear); the same colour with palette alpha 128 and no MATL was opaque.
 - "unphysical" voxels (225-240) render normally and `GetShapeMaterial` reports them as
   `unphysical`. Whether a player can walk through them was not tested.
 - `MakeHole(pos, r0, r1, r2)`: r1 ≤ r0 and r2 ≤ r1, as documented; a soft radius of 0 with a
@@ -580,6 +622,19 @@ The one deletion that crashes is a script deleting its own entity (section 1).
   constraints could not move it). `<vox pos="0 h 0">` with h = floor(sz / 2) × voxel size puts
   the model's bottom at the origin. (An earlier note here, from a vehicle porting project, said
   the origin is the bottom centre; that is wrong for these files.)
+- **A named object (`<vox file=... object="x"/>`) is placed differently: bottom centre on the
+  origin** (measured 2026-11-28, 2.2.0, multiplayer test host, the same 6 × 6 × 4 model twice,
+  in a SIZE + XYZI file and in a file with MagicaVoxel's scene graph written by `tools/vox.py`):
+
+  | `<vox>` | shape bottom, body at y 5 |
+  |---|---|
+  | plain file, no `pos` / `pos="0 0 0"` | 4.8 (centred) |
+  | plain file, `pos="0 1 0"` | 5.8 |
+  | scene file, `object="block"`, no `pos` / `pos="0 0 0"` | 5.0 (bottom on the origin) |
+  | scene file, no `object` | 4.8 (centred) |
+
+  x and z are centred in every case; `pos` adds to the placement, it does not replace it. The
+  object's own transform in the file (`_t`) was 0 0 0 here; a non-zero `_t` was not tested.
 
 ### Voxscript (measured 2026-11-21, 2.2.0, multiplayer test host and joined client)
 
@@ -814,6 +869,56 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
 - Hand-animated falling parts: before the landing raycast call `QueryRequire("static")`, or
   parts come to rest on dynamic bodies and hang in the air when those move away.
 
+### Animators and animation files (measured 2026-11-28, 2.2.0, multiplayer test, playground)
+
+- **File format** (`<animator file="...bin">`, what VoxTool writes as `animdata.bin`): "TD_ANIM"
+  version 100, a skeleton (per bone: name, parent index, T-pose position and rotation local to
+  the parent) and clips (name, frames per second, per bone a track of keys: position,
+  rotation, time in seconds, local like the T-pose). Worked out from the game's own files: all
+  20 shipped with 2.2.0 parse to their last byte, and Merlin's re-written by
+  `tools/td_anim.py` is byte-identical. The layout is in that script's docstring.
+- **Every clip in the game's files has a track for every bone.** A clip without tracks for
+  two of its four bones crashed both multiplayer windows (access violation in the physics
+  update, no crash report) as soon as a script played it; spawning it alone did not crash.
+  With tracks for all bones the same skeleton played fine. `td_anim.write` now fills them.
+- **`FindAnimator(tag)` searches tags, not names.** `<animator name="armtest">` was not found
+  by `FindAnimator("armtest", true)`; with `tags="armtest"` it was. (Merlin's prefab has both.)
+- The layout that worked, copied from the game's character prefabs: `<animator>` holds one
+  body for the root bone with no model, then nested bodies, one per bone, each named like its
+  bone, `tags="bone=<name> <name> nomerge"`, `dynamic="false"`, holding
+  `<vox tags="unbreakable nocull bone" ... object=...>` and `<joint tags="bone" type="ball"/>`
+  (cone joints with `limits` / `iklimits` in the characters). Spawned with
+  `Spawn(xml, t, false, false)`, as the main menu spawns characters. Whether the joints are
+  needed was not separated from the missing-track crash (the first try had neither).
+- `PlayAnimationLoop(anim, clip)` called every `server.tick` moved the bone bodies
+  (`GetBoneWorldTransform` and the bodies' transforms changed between reads), and the joined
+  client saw the same animator handle and the bodies moving: **bone bodies animated on the
+  server replicate like other bodies**. The game's own character `player/player_sven_lagom.xml`
+  spawned from a mod's script the same way (55 entities, 39 clips) and played `idle_1`.
+- A bone body's transform is the bone's (`GetBodyTransform` equals `GetBoneWorldTransform`
+  pos); the `<vox>` inside is placed relative to it as for any body (section 5, "Materials and
+  .vox files").
+
+### Sounds (measured 2026-11-28, 2.2.0, multiplayer test host)
+
+- The game's sounds are `data/snd/**/*.ogg.tde` (1217 files, encrypted). Load them by their
+  name without `.tde`: `LoadSound("alarm1.ogg")`, `LoadSound("snd/alarm1.ogg")` and
+  `LoadSound("tools/launcher0.ogg")` all loaded. `MOD/x.ogg` is the calling script's mod.
+  Names in subfolders need the folder (`vehicle/hydraulic-loop.ogg`): find a sound with
+  `find "<Teardown>/data/snd" -iname "*word*"` and use its path from `snd/` on, without
+  `.tde`.
+- **A missing sound gives no error and a normal-looking handle** (`LoadSound` returned 199 and
+  200 for two missing files). The only trace is a log line: `Couldn't find sound bank
+  <resolved path>` from `LoadSound`, `Couldn't find sound loop: <resolved path>` from
+  `LoadLoop` (seen by the skill-test session), with `data/snd/<name>` for bare names: check
+  `read_log` with `contains: "Couldn't find sound"` or your mod's folder name
+  after adding sounds.
+- Numbered series (official docs, `LoadSound` entry): load `name0.ogg` and each `PlaySound`
+  picks one of `name0`, `name1`, ... at random. The game's own sounds use this
+  (`bullet-hit0..2`).
+- A mod replaces a game sound by putting an `.ogg` at the same path under its own `data/snd/`
+  (official modding guide; not tested here).
+
 ### Light and environment
 
 - A dark area needs a fixed exposure: `SetEnvironmentProperty("exposure", 1, 1)`. With the
@@ -1006,7 +1111,13 @@ Measured 2026-11-22 (2.2.0, multiplayer test host and joined client;
 - `log_sentry.txt`: the log of the last session that crashed, written by the crash handler at
   the crash (with line numbers, session time, level and tags such as `[NoTag|Network]`).
 - Logged with script path and line: wrong-side calls, missing prefabs / sounds / vox files,
-  disabled scripts. Lua runtime errors also show as red text on screen: `screenshot`.
+  disabled scripts.
+- **Lua runtime errors: message on screen, path only in the log** (measured 2026-11-28, 2.2.0,
+  multiplayer test host, a spawned script erring in `server.tick` and `client.tick`). On
+  screen, red text per error: `[string ".../tmp_err.lua"]:5: attempt to index local 'missing'
+  (a nil value)`. In `log_0.txt`: `WARNING ... [NoTag|LocalMod] <full script path>`, one line
+  per error per tick, with no message or line number (no "attempt to" text anywhere in the
+  log). The script kept running and erring every tick.
 - A `#version`-less script in multiplayer is logged as `Single player script disabled`.
 - **A mod script's `print()` never reaches the log**, and `DebugPrint` only shows on screen.
   The way to write text into the log is a `LoadSound` of a missing file (section 7); give each

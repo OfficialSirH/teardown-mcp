@@ -8,3 +8,5 @@ tools/probe/getters.lua
 tools/probe/allcalls.lua
 tools/probe/exists.lua
 __pycache__/
+skill/teardown-modding/references/official/
+skill/teardown-modding/references/game/

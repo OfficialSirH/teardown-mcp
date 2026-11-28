@@ -26,8 +26,10 @@ wrong guess often fails silently, and each look at the result can cost a level r
    shows until then. It returns only when the new scene runs; heavy mods take minutes, so do
    not shorten the timeout and do not poll with other tools meanwhile.
 4. **Look.** `look_at` puts the player in front of what you changed, then `screenshot` (red
-   text on screen = a Lua error), `read_log` with `file: log_0.txt`
-   in the multiplayer test (Lua errors appear there with file and line), `run_lua` to read
+   text on screen = a Lua error, with its message and line number; the log only gets a
+   `WARNING` line with the script's path for each one), `read_log` with `file: log_0.txt`
+   in the multiplayer test (missing files, disabled scripts, wrong-side calls; pass `contains`
+   with your mod's folder name or `data/snd` to find your own lines), `run_lua` to read
    state, `registry_get` for the mod's `level.*` keys.
    To exercise input paths (a tool's fire button, a clickable menu, driving), `send_input`
    presses keys and clicks in the game window like a player; it takes window focus from the
@@ -40,6 +42,14 @@ wrong guess often fails silently, and each look at the result can cost a level r
 
 Prefer measuring to reasoning. `run_lua` takes a `file` (absolute path, forward slashes): write
 a small Lua file that returns what you want to know and run it, instead of long inline code.
+
+**Read the official entry before using a function** you have not used in this session: its
+row in `references/api-index.md` links it (Doc column), or grep `### Name` in
+`references/official/api/`. The entries state rules the signature does not show (cross-mod
+`Spawn` in multiplayer, "must be called every frame", "only checks the center point", which
+functions are deprecated). If `references/official/` is missing, generate it first:
+`python -I tools/fetch_official_docs.py` in the Teardown-MCP repository (a minute; it is not in
+git because the text is Tuxedo Labs').
 
 ## Where code runs (read this before any `run_lua`)
 
@@ -95,16 +105,37 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
   "the local player" in client code.
 - **Testing multiplayer:** the multiplayer test compares each mod's files between host and
   client at start. Anything that changes a mod folder while it starts gets the client kicked.
+  To see edits to your content mod (scripts, XML, models) in the running test, `reload_scene`
+  is enough: it re-hashes the mod on host and client and both load the new files (measured
+  by the skill-test session, 2026-11-28). Restart the test only for a changed global mod
+  (the bridge itself, say).
 - **Two ways to crash the game outright:** a script deleting its own entity inside its own
   callback, and `Constrain*` called from `server.tick` instead of `server.update`.
 - **No API calls at a script's top level** (while the file loads): only inside callbacks.
+- **Multiplayer needs `version = 2` in `info.txt` and `#version 2` as the first line of every
+  script.** A script without it is switched off in multiplayer without any message; a mod
+  without it is treated as single-player only.
+- **`Spawn("<mod id>:path.xml")` from another mod** fails in multiplayer with "blocked in
+  multiplayer: mod ... is not listed in mods.available" unless that mod is part of the session
+  (built-in mods always are; an installed mod that is not loaded is not). Check
+  `HasKey("mods.available.<id>")` before depending on another mod (authoring.md section 15).
+- **Registry keys are lower case:** `SetInt("level.myKey", 1)` stores `level.mykey`; reads
+  ignore case, but `ListKeys` returns the lower-case name.
 - **`Spawn` spawns only the first root element** of a prefab or XML string, and joints only
   attach to shapes from the same `Spawn` call unless `jointExisting` is true (which can also
   make them pick the wrong pair of shapes).
 - **Dynamic bodies below about y = -20 freeze in mid-air** (put to sleep every step). Build
   anything with physics above that.
-- **A `<vox>` without `pos` is centred on its body origin**, height included: a model built
-  standing on z = 0 hangs half its height below the origin.
+- **Where a `<vox>` sits in its body depends on `object=`:** a whole file (no `object`) is
+  centred on the body origin, height included, so a model built standing on z = 0 hangs half
+  its height below the origin; a named object (`object="x"`) stands with its bottom centre on
+  the origin. `pos` adds to either.
+- **In a `.vox`, the palette index is the material** (index 57-72 is wood whatever its colour);
+  glass is see-through only with a MATL glass entry. Build models with `tools/vox.py`, which
+  picks the indices by material name (authoring.md section 16).
+- **An animation clip needs a track for every bone**, or the game crashes (both windows) as
+  soon as it plays. `tools/td_anim.py` fills missing tracks. `FindAnimator` finds by tag, not
+  name (authoring.md section 17).
 - **`server.postUpdate` / `client.postUpdate`** run once per physics step, after it.
 - **`<screen>` works in multiplayer**: its version 1 script runs once, on the host, and every
   player sees that picture (in sync, operated by any player). For displays made of `DrawSprite` quads instead
@@ -129,25 +160,46 @@ something new (see "Extending this knowledge" there).
 
 ## Reference files
 
-- `references/api-index.md` - every documented function with its signature, the side it may be
-  called from, and its line in `script_defs.lua`. Search it (grep the function name) rather
-  than reading it whole. For the meaning of parameters, read the doc comment at that line in
-  `<Teardown>/data/script_defs.lua`; the game's own scripts in `<Teardown>/data/script/` are
-  the best usage examples.
+- `references/official/` - Tuxedo Labs' own documentation, converted to Markdown (generated on
+  each machine by `tools/fetch_official_docs.py`, not in git). `api/<category>.md`: every
+  public function in full (arguments, returns, description, example, official and measured
+  side); `api/README.md`: the server / client / shared tables and every callback;
+  `voxscript/`: the Voxscript API; `modding.md`: the modding guide (mod files, editor, tags,
+  layers, MagicaVoxel palette and materials, skybox); `multiplayer.md`: version 2 mods, game
+  modes, standard multiplayer level tags; `animation/`: the four animation guides (character
+  mod with VoxTool and Mixamo, custom-tool animation, vehicle IK rigging, the animation system)
+  with VoxTool's `bonemap.xml` / `nodes_template.xml` examples; `images/`: the guides'
+  pictures. The first place to look for what a function, file or tag does. Where it and
+  `quirks.md` disagree, the measurement in `quirks.md` wins.
+- `references/game/xml.md` - the level and prefab XML reference (generated by
+  `tools/gen_xml_reference.py`, not in git): the editor's own help for each node type, its
+  property tooltips with defaults, and every element and attribute the game's 1100+ XML files
+  use, with counts and example values. Grep an attribute here before inventing one. Missing?
+  Run `python -I tools/gen_xml_reference.py` in the Teardown-MCP repository.
+- Tools in the Teardown-MCP repository `tools/` for making assets without an editor:
+  `vox.py` writes `.vox` models with materials by name (glass, emissive, named objects);
+  `td_anim.py` writes and reads animation files (skeleton and clips) for `<animator>`.
+- `references/api-index.md` - all 757 functions in `script_defs.lua`: signature, the side it
+  may be called from (measured), a link to its official entry, and its line in
+  `script_defs.lua`. The 147 marked "not in official docs" are internal or undocumented. Search
+  it (grep the function name) rather than reading it whole. The game's own scripts in
+  `<Teardown>/data/script/` are the best usage examples.
 - `references/authoring.md` - patterns that were built and run: a level that loads, shapes and
   a wheeled vehicle from XML, server logic with client presentation, HUD and world-space UI,
-  camera, weather, shooting, joints and triggers, a custom hand tool, a clickable menu, screens that work in multiplayer, finding and fixing what costs frame time. Read it before writing a
-  new script, prefab or level.
+  camera, weather, shooting, joints and triggers, a custom hand tool, a clickable menu, screens that work in multiplayer, finding and fixing what costs frame time, and the mod's own
+  files (info.txt, options.lua, spawn.txt, multiplayer level tags, palette and materials,
+  skybox, sounds, depending on another mod), models built by script, and animated models.
+  Read it before writing a new script, prefab, model or level.
 - `references/quirks.md` - measured engine behaviour: script model, wrong-side calls, registry
   and `shared` propagation, entities and handles, files and the Lua sandbox, logs, the
   multiplayer test, what is still unverified.
 - `references/bridge.md` - the MCP tools one by one, recipes (reload and check, inspect a
   mod's state, compare host and client, test UI code), failure messages and what to do.
 - `references/unofficial-docs.md` - not verified, from the community "Unofficial TD Docs":
-  the callbacks `script_defs.lua` leaves out (`render`, `handleCommand`, `destroy`), entity
-  tags the engine reads (`unbreakable`, `interact`, `nocull`, vehicle tags...), registry
-  keys, Voxscript, and the game's multiplayer game-mode library (mplib). Look there before
-  guessing at a tag or registry key; measure before relying on it.
+  `handleCommand` (the one callback the official docs leave out), entity tags the engine reads
+  (`unbreakable`, `interact`, `nocull`, vehicle tags...), registry keys, and the game's
+  multiplayer game-mode library (mplib). The official docs have no list of tags or registry
+  keys, so look there before guessing at one; measure before relying on it.
 
 ## Reporting
 

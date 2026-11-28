@@ -22,6 +22,9 @@ teardown-mcp repo (`playground/`: `main.xml`, `prefab/buggy.xml`, `prefab/blaste
 12. Development loop that worked
 13. Game modes
 14. Finding and fixing what costs frame time
+15. Mod files, assets and other mods
+16. Models built by a script (`tools/vox.py`)
+17. Animated models (`<animator>`, `tools/td_anim.py`)
 
 ## 1. A level that loads
 
@@ -43,6 +46,11 @@ A mod folder with `info.txt` (`name`, `author`, `description`, `tags = Map`, `ve
 </scene>
 ```
 
+- **`<spawnpoint rot="0 0 0">` faces +z; `rot="0 180 0"` faces -z**, as above (measured
+  2026-11-28 by the skill-test session: at rot 0, `TransformToParentVec(GetPlayerTransform(1),
+  Vec(0, 0, -1))`, the way the player looks, was (0, 0, 1), and a screenshot showed the level
+  behind the player; after rot 180 the joined client spawned facing -z). Vehicles differ:
+  their forward is their local -z (section 3).
 - `main.lua` and `sandbox.lua` without `MOD/` are the game's own scripts (`data/script/`):
   they give players tools, respawn and the sandbox rules. Keep them unless the mod replaces
   them.
@@ -261,6 +269,8 @@ A dusk fade that worked: over 3 s lerp `sunBrightness` 6 → 0.6, `skyboxtint` t
 0.35), `skyboxbrightness` 1 → 0.35, `fogColor` to (0.45, 0.25, 0.2), `rain` to 0.8, `wetness`
 to 1.
 
+A sky of your own: section 15, "Custom skybox".
+
 ## 8. Shooting and destruction
 
 - `Shoot(origin, dir, "bullet", strength)` is server-only. **Strength scales the size of the
@@ -316,6 +326,26 @@ end
 - A dynamic body that loads at rest is asleep (`IsBodyActive` false) and stays where it is,
   even in mid-air, until something touches it. An unattached gate hung in the air looking
   correct; a body staying put is not proof that a joint holds it.
+
+### Things a player presses (levers, buttons)
+
+Built and run by the skill-test session (2026-11-28, multiplayer test, both players):
+
+- Tag the body or shape `interact`. The prompt text is the tag's value, but a value in XML
+  `tags=` cannot hold a space (spaces separate tags). For a text with spaces set it from
+  the script: `SetTag(lever, "interact", "Pull lever")` in `server.init`. (The game's own
+  XML uses `interact=loc@KEY`, a key in its translation tables, which mods cannot add to.)
+- Read the press on the server, per player:
+
+```lua
+function server.tick(dt)
+	for p in Players() do   -- every player; needs #include "script/include/player.lua"
+		if InputPressed("interact", p) and GetPlayerInteractBody(p) == lever then
+			-- start the action here; tell clients with ClientCall for sounds and effects
+		end
+	end
+end
+```
 
 ## 10. A custom hand tool
 
@@ -668,3 +698,285 @@ Physics time alone moved from 0.6 to 5 ms between two moments of one wave.
   was acceptable behind a progress screen; elsewhere lower the edits per tick.
 - Cheap enough to leave alone (measured): about 60 `DrawSprite` quads a frame for screens
   (1000 cost about 0.2 ms); `FindBodies(tag, true)` per frame for a tag with 20 bodies.
+
+## 15. Mod files, assets and other mods
+
+From Tuxedo Labs' modding guides (`official/modding.md`, `official/multiplayer.md`, read
+2026-11-28; pictures in `official/images/`), in short. Marked "measured" where we checked it.
+
+**The mod folder** (`Documents/Teardown/mods/<name>`; use only Latin letters, digits and
+spaces in names, or loading may fail). These files go in the root:
+
+| File | What it does |
+|---|---|
+| `info.txt` | Required. `name`, `author`, `description`, optional `tags` (Workshop categories: Map, Gameplay, Asset, Vehicle, Tool). `version = 2` marks the mod as multiplayer-capable; without it, it is a single-player mod. `preview = <file>` is the picture in the Multiplayer menu: 512 × 292, PNG or JPG, inside the mod folder |
+| `main.xml` | Makes it a content mod (a playable level). `MOD/` in paths is the mod root; `LEVEL/` is the folder named like the open XML file, next to it |
+| `main.lua` | Runs whenever the mod is active (a global mod: in every game while enabled) |
+| `options.lua` | Adds an Options button in the mod manager; the game runs its `draw()` for the options screen (the built-in Speedometer mod is the example). Settings go in `savegame.mod.*` |
+| `spawn.txt` | Prefabs for the spawn menu, one per line: `path/to/thing.xml : Category/Name`, path from the mod root. Static bodies become dynamic when spawned from the menu |
+| `gamemodes.txt` | Game modes (section 13) |
+| `preview.jpg` | Workshop thumbnail, at most 1 MB; publishing also writes `id.txt` (the Workshop item id, used for updates) |
+
+- **Replacing game content:** a file at the same path as under the game's `data/` folder
+  (`<mod>/data/vox/pipebomb.vox`) replaces it while the mod plays, or always for an enabled
+  global mod. The game's sounds are encrypted `.tde` files; an `.ogg` with the same name
+  (without `.tde`) in the same place is loaded instead.
+- **More levels:** `StartLevel("id", "MOD/level2.xml", "layer1 layer2")`. Groups get a
+  `layer` property; a group with `-name` in it is left out when layer `name` loads.
+- **Custom tools:** `RegisterTool(id, name, vox)` once, then enable it per player with
+  `SetToolEnabled` (tools start disabled; section 10 has a working tool).
+- **Script parameters** (`GetIntParam` etc.) come from the `<script>` element's attributes in
+  the level XML; copy them to variables in `init`.
+
+**Multiplayer requirements:** `version = 2` in `info.txt`, and `#version 2` on the first line of
+**every** script: a script without it does not run in multiplayer, silently. Game logic goes
+on the server, presentation on the client, `shared` is server-to-client only.
+
+**Standard multiplayer level markup**, used by the built-in modes and recommended so levels
+work with other people's game modes (a convention, not engine behaviour). Built-in levels keep
+these location nodes under a group `multiplayer`:
+
+| Location tag | Used for |
+|---|---|
+| `playerspawn` | spawn points in modes without teams (Deathmatch) |
+| `teamspawn=N` | team N's spawn points (1, 2, ...) |
+| `ammospawn rarity=low` / `medium` / `high` | crate spots; the mode decides which crate goes where (built-in colours: low grey, medium blue, high red, tool-mod crates purple) |
+| `pointofinterest=N` | where a mode puts team N's objective (a flag base, say) |
+
+**MagicaVoxel models:**
+
+- **The palette index is the material**, not the colour: index 9 is grass whatever colour it
+  has, 57 to 72 are wood. `official/images/modding/teardown_palette.png` is the full chart;
+  Tuxedo Labs also offer an annotated palette file (`downloadable/teardown_palette.vox` on
+  the modding page).
+- Object size: at most 256 × 256 × 256 voxels; about 128³ is fine; big flat objects
+  (256 × 256 × 10) are fine. Split objects with a lot of empty space (a tree: crown and
+  trunk; a house: one object per wall and floor), because the engine walks the empty space
+  too (section 14 has the measured cost).
+- Overlapping objects: the newer one (top of the scene outline) overwrites the older one's
+  voxels on import. Cut and paste an object to make it the newest.
+- Voxels hold together only through faces, not edges or corners.
+- Do not enclose soft material in hard material (plaster grout between bricks gets stuck
+  loose when broken); make the grout from the hard material in a lighter colour.
+- Rendering: use the Metal material type (Diffuse is Metal at full roughness). Glass is clear
+  for any transparency value other than 100. Emissive needs Power 2 or more to glow in game,
+  and glowing voxels light nothing.
+
+**Materials** (softest to hardest; which tools break them):
+
+| Material | Hardness | Sledge | Blowtorch | Guns | Explosives |
+|---|---|---|---|---|---|
+| glass, grass, plastic, wood | soft | yes | yes | yes | yes |
+| dirt, plaster | soft | yes | no | yes | yes |
+| concrete, brick | medium | no | no | yes | yes |
+| weak metal | medium | no | yes | yes | yes |
+| hard masonry, hard metal | hard | no | no | no | yes |
+| heavy metal, rock | unbreakable | no | no | no | no |
+
+**Custom skybox.** The modding page's `skybox-dds.zip` holds `cmft.exe` (an open-source cubemap
+filter) and `generate.bat`, which turns `sky.hdr` (an equirectangular HDR image) into
+`sky.dds`: radiance filter, 256-pixel faces, 20 mip levels (gloss scale 12, bias 3, Blinn
+BRDF, base level excluded), output as an `rgba32f` cubemap DDS. Use it with
+`<environment skybox="MOD/sky.dds"/>` or `SetEnvironmentProperty("skybox", "MOD/sky.dds")`.
+
+Measured 2026-11-28 (2.2.0): `cmft.exe` with `generate.bat`'s parameters turned the kit's
+sample `sky.hdr` into an 8 MB `sky.dds` (256 × 256 faces, 9 mips) in 0.6 s. (Running the .bat
+through `cmd /c` from PowerShell failed with "not recognized"; calling `cmft.exe` with the same
+arguments worked.) Set at run time from the server with `SetEnvironmentProperty`, the new sky
+and its lighting showed at once on the host and the joined client; `MOD/` resolves against
+the calling script's own mod on each machine. At 256-pixel faces the sky looks softer than the
+built-in `day.dds`; raise `dstFaceSize` for a sharper one (not tried).
+
+**Depending on another mod** (measured 2026-11-28, 2.2.0, multiplayer test, MCP Playground,
+host server, host client and joined client alike). The registry lists mods under
+`mods.available.<mod id>` (`builtin-<name>`, `steam-<workshop id>`, `local-<folder>`), each
+with `name`, `listname`, `author`, `description`, `tags`, `path`, `local`, `playable`,
+`gamemode`, `multiplayer`, `active` and more (`unofficial-docs.md` section 4).
+
+- **In a multiplayer session it holds only the session's mods:** the 40 built-in mods, the
+  content mod being played and the global mods loaded with it (42 keys here, while 7 more
+  local mods and 176 Workshop mods were installed). So `HasKey("mods.available.<id>")` answers
+  "can this session use mod X", which is the question that matters.
+- `.active` was true for the global mod (the bridge) and **false for the content mod being
+  played**; that one is `GetString("game.mod")`.
+- `Spawn("<id>:path.xml", t)` for a mod not in the list (installed or not) raises a normal,
+  catchable error: `Spawn('<path>') blocked in multiplayer: mod '<id>' is not listed in
+  mods.available.` A built-in mod's prefab spawned fine though that mod was not active.
+- A missing file in your own mod (`Spawn("MOD/nothing.xml", t)`) raises nothing and returns
+  an empty table.
+
+```lua
+-- Before using another mod's prefabs: say so instead of failing quietly.
+local DEP = "steam-1234567890"
+function server.init()
+	hasDep = HasKey("mods.available." .. DEP)
+	if not hasDep then shared.missingDep = DEP end  -- the client shows a notice
+end
+```
+
+The game's own spawn menu (`data/script/spawn.lua`) uses the same `HasKey` check.
+
+**Outdated in the guide:** "objects cannot be spawned at run time" (its Possibilities and
+Limitations section) predates `Spawn`; ignore it. Its other limit, water height fixed at run
+time, is not measured; `SetProperty` lists a water `depth`.
+
+**Reusing the game's assets** (quirks.md "Sounds" and "Spawn and prefabs" have the measurements):
+
+- Sounds: the game's own load by name, `LoadSound("alarm1.ogg")` (from `data/snd/`, list the
+  folder for names; the files end in `.ogg.tde`, leave that off). Your own go in the mod:
+  `LoadSound("MOD/snd/beep.ogg")`, Ogg Vorbis. A wrong path still returns a handle and only
+  logs `Couldn't find sound bank <path>` (`LoadLoop`: `Couldn't find sound loop: <path>`), so
+  check the log after adding sounds: `read_log` with `contains: "Couldn't find sound"`. `LoadLoop` for
+  looping sounds, played with `PlayLoop` every frame you want to hear them. Play them on the
+  client (section 4).
+- Prefabs and models: built-in prefabs spawn by their path under `data/`
+  (`Spawn("player/player_sven_lagom.xml", t, false, false)`), and the game's `.vox` files load
+  the same way (`<vox file="vox/...">`). Another mod's files: `<mod id>:path` in `Spawn`
+  (see "Depending on another mod" above).
+- Levels and prefabs in the game's `data/` and `mods/` folders are plain XML: the best
+  examples of any element. `references/game/xml.md` indexes them.
+
+**What a level or prefab element means:** `references/game/xml.md` (generated from the editor's
+help text and the game's own XML) lists every element and attribute the game uses, with the
+editor's description and default where it has one.
+
+## 16. Models built by a script (`tools/vox.py`)
+
+When no one is at MagicaVoxel, write the `.vox` from Python. `tools/vox.py` (Teardown-MCP repo,
+stdlib only) gives out palette indices by material name, so the voxels break, burn and weigh
+as that material (the material is the palette index's range, not its colour: quirks.md
+"Materials and .vox files").
+
+```python
+import sys; sys.path.insert(0, r"C:\Projects\Teardown-MCP\tools")
+import vox
+v = vox.Vox()
+wood = v.color("wood", (120, 80, 40))              # an index in 57-72
+steel = v.color("metal", (90, 90, 100))
+lamp = v.color("plaster", (255, 220, 120), emit=1.0)   # glows (MATL _emit)
+pane = v.color("glass", (180, 220, 255))           # see-through (MATL _glass added for glass)
+crate = v.model("crate", (10, 10, 10))             # voxels, x y z with z up
+crate.box((0, 0, 0), (9, 9, 9), wood)              # inclusive corners
+crate.box((1, 1, 1), (8, 8, 8), 0)                 # 0 clears: hollow it
+crate.box((0, 4, 4), (0, 5, 5), pane)              # a window on one side
+v.save(r"C:\path\to\mod\vox\props.vox")            # several models per file are fine
+```
+
+```xml
+<body dynamic="true"><vox file="MOD/vox/props.vox" object="crate"/></body>
+```
+
+- Each `model` becomes a named object, loaded with `object="name"`. **A named object stands
+  with its bottom centre on the body origin** (measured), so a crate spawned at floor height
+  rests on the floor. `pos` on the `<vox>` moves it from there.
+- Axes: `.vox` x, y, z (z up) become Teardown x, y up, -z. 1 voxel = 0.1 m.
+- Up to 256 voxels a side, but keep objects compact: split shapes with a lot of empty space
+  (section 15, MagicaVoxel models).
+- Read a model back with `python -I tools/vox.py file.vox` (models, sizes, voxel counts per
+  material). After spawning, `GetShapeMaterialAtPosition` or `GetShapeMaterial` confirms the
+  material in the game.
+- Hollow models with 1-voxel walls break into large pieces (a hollow wood crate split in
+  two from one bullet, skill-test session): use 2-3 voxel walls, or solid models, for props
+  that should break gradually.
+- A shape the player should not collide with: use `unphysical` (225-240). Indestructible:
+  `rock` or `heavymetal`, or the `unbreakable` tag.
+- Ranges: glass 8 slots, foliage 16, dirt 16, rock 16, wood 16, masonry 32, plaster 16, metal
+  16, heavymetal 16, plastic 16, hardmetal 8, hardmasonry 8, ice 8 colours per file; `color`
+  raises an error when a material's range is used up.
+
+## 17. Animated models (`<animator>`, `tools/td_anim.py`)
+
+The engine has a skeletal animation system: an `<animator>` element with a skeleton and clips
+from a `.bin` file, one body per bone, and Lua functions to play and blend clips
+(`PlayAnimation`, `PlayAnimationLoop`, `PlayAnimationFrame`, `BeginAnimationGroup`,
+`SetAnimationClipSpeed`, IK and ragdoll functions: `official/api/animation.md`). Two ways to
+make one:
+
+1. **The official route, from a rigged FBX** (Mixamo or Blender): Tuxedo Labs' VoxTool turns
+   an FBX, a bone map and a node template into `animdata.bin`, `prefab.xml`, `model.vox`
+   and `animation.lua`. Step by step in `official/animation/character-mod.md` (with
+   `guide-files/` examples). `official/animation/custom-tools.md` animates a held tool,
+   `vehicle-ik-rigging.md` puts a driver in a vehicle, `guide.md` explains the system
+   (clips, groups, layers, IK, ragdoll). A mod with `characters.txt` (`[Name]`, `description`,
+   `preview`, `path` to the prefab, `anim_speed`, `height`) adds a player character; the
+   built-in Merlin mod (`<Teardown>/mods/merlin/`) is a complete example.
+2. **By script, for simple rigs** (doors, arms, turrets, creatures made of boxes):
+   `tools/td_anim.py` writes the `.bin`, `tools/vox.py` one model per bone. This was built and
+   run (2026-11-28, multiplayer test, both windows; the run had `pos` on each `<vox>`, see the
+   rules below):
+
+```python
+import math, sys; sys.path.insert(0, r"C:\Projects\Teardown-MCP\tools")
+import td_anim
+I = (0, 0, 0, 1)                      # no rotation (quaternion x y z w)
+bones = [("root", -1, (0, 0, 0), I),  # name, parent index, T-pose pos (local to parent), rot
+         ("base", 0, (0, 0, 0), I),
+         ("seg1", 1, (0, 0.4, 0), I),
+         ("seg2", 2, (0, 1.0, 0), I)]
+k1, k2 = [], []
+for f in range(61):                   # 2 s at 30 fps
+    t = f / 30
+    k1.append(((0, 0.4, 0), td_anim.quat_axis_angle((0, 0, 1), 40 * math.sin(math.pi * t)), t))
+    k2.append(((0, 1.0, 0), td_anim.quat_axis_angle((0, 0, 1), 60 * math.sin(math.pi * t + 1)), t))
+td_anim.write("anim/arm.bin", bones, [("wave", 30.0, {2: k1, 3: k2})])  # root, base: T-pose
+```
+
+```xml
+<group>
+	<script file="MOD/script/arm.lua"/>
+	<animator name="arm" tags="arm" file="MOD/anim/arm.bin">
+		<body name="root" tags="bone=root root nomerge" dynamic="false">
+			<body name="base" tags="bone=base base nomerge" dynamic="false">
+				<vox tags="unbreakable nocull bone" file="MOD/vox/arm.vox" object="base"/>
+				<joint tags="bone" type="ball" size="0.1"/>
+				<body name="seg1" tags="bone=seg1 seg1 nomerge" pos="0 0.4 0" dynamic="false">
+					<vox tags="unbreakable nocull bone" file="MOD/vox/arm.vox" object="seg1"/>
+					<joint tags="bone" type="ball" size="0.1"/>
+					<body name="seg2" tags="bone=seg2 seg2 nomerge" pos="0 1.0 0" dynamic="false">
+						<vox tags="unbreakable nocull bone" file="MOD/vox/arm.vox" object="seg2"/>
+						<joint tags="bone" type="ball" size="0.1"/>
+					</body>
+				</body>
+			</body>
+		</body>
+	</animator>
+</group>
+```
+
+```lua
+#version 2
+function server.init()
+	anim = FindAnimator("arm", true)      -- by tag
+end
+function server.tick(dt)
+	if anim ~= 0 then PlayAnimationLoop(anim, "wave") end  -- every tick while it should play
+end
+```
+
+Rules learned building it (quirks.md "Animators and animation files"):
+
+- **Every clip needs a track for every bone**, or the game crashes when the clip plays.
+  `td_anim.write` adds T-pose tracks for bones you leave out.
+- Body `pos` = the bone's T-pose position, so the skeleton and the bodies agree. A bone
+  model made as a named object stands on its bone's origin (bottom centre), so a segment
+  built upward from z = 0 in the `.vox` grows from its joint. (The run above used `pos="0 0.5 0"`
+  on the `<vox>`, assuming centred models, and each segment started 0.5 m above its joint:
+  leave `pos` off for this layout.)
+- `FindAnimator` takes a tag: give the `<animator>` a `tags=`.
+- Animation driven on the server replicates to every client (the bone bodies move like any
+  server body). The game itself animates player characters on each client instead (local
+  models, quirks.md "Client-side entities and animation"); do that for purely visual parts.
+- **A clip played once per event** (a lever pull): keep your own clock on the server and call
+  `PlayAnimationFrame(anim, clip, t)` every tick, with `t = 0` while idle (the first frame,
+  so the rest pose if the clip starts there). Do things at the right moment from `t`, at
+  `GetBoneWorldTransform(anim, bone)` (the skill-test session spawned a crate at a hook bone
+  this way). Measured 2026-11-28 by that session: it replicated to the client, and the bones
+  came back exactly to rest (rotation 0, 0, 0, 1) on host and client after the clip.
+  `PlayAnimation` (the engine's own one-shot) was not tried, nor what pose bones take when
+  no clip is played at all.
+- Clips play while you call `PlayAnimation*` for them; blend several with weights or inside
+  `BeginAnimationGroup` / `EndAnimationGroup`. `data/script/player_locomotion.lua` in the game
+  is the full example of blending, speeds, fades and IK.
+- Not tested: rotations in the T-pose (all were identity here), scaled bone models
+  (`scale="0.5"`, as the characters use), whether the `<joint tags="bone">` elements are
+  needed when nothing is ragdolled.
