@@ -201,6 +201,39 @@ Two ways, both shown on the host and a joined client (2026-11-22):
   joined clients see its picture, so every player sees the same screen, and it reads the
   host's registry and entities directly (quirks.md section 1). It needs a shape to sit on,
   and gives a full UI canvas (buttons, images, fonts) that any player can operate.
+  Working example (`playground/screen/probescreen.lua` is the full probe):
+
+```xml
+<body tags="interact">
+	<voxbox pos="-1 0 -0.05" size="20 12 1" color="0.1 0.1 0.1">
+		<screen pos="1 0.6 0.11" size="1.8 1.0" script="MOD/screen/status.lua"
+			enabled="true" interactive="true"/>
+	</voxbox>
+</body>
+```
+
+```lua
+-- MOD/screen/status.lua: version 1, so NO "#version 2" line and no server/client tables.
+-- Runs once, on the host; every player sees what it draws.
+clicks = 0
+function draw()
+	UiColor(0.08, 0.1, 0.14, 1)
+	UiRect(UiWidth(), UiHeight())          -- background, 640 x 480
+	UiTranslate(UiCenter(), 120)
+	UiAlign("center middle")
+	UiFont("bold.ttf", 48)
+	UiColor(1, 0.8, 0.3, 1)
+	UiText("SCORE " .. GetInt("level.mymod.score"))  -- the host's registry: no syncing needed
+	UiTranslate(0, 200)
+	if UiTextButton("RESET (" .. clicks .. ")", 360, 70) then
+		clicks = clicks + 1
+		SetInt("level.mymod.score", 0)    -- runs on the host, so it changes the real value
+	end
+end
+```
+
+  Not measured: whether a click by a joined client reaches the host's script (the campaign
+  hub computer, also a screen, suggests it does).
 - **`DrawSprite` quads** (below): no resolution, no shape needed, any size, on moving bodies,
   drawn from your own `#version 2` client code and `shared` state, but text needs a font made
   of images and the rules below.
@@ -729,7 +762,8 @@ spaces in names, or loading may fail). These files go in the root:
   the level XML; copy them to variables in `init`.
 
 **Multiplayer requirements:** `version = 2` in `info.txt`, and `#version 2` on the first line of
-**every** script: a script without it does not run in multiplayer, silently. Game logic goes
+**every** level script: a script without it does not run in multiplayer, silently. (Screen
+scripts are the exception: version 1, run on the host, seen by all; section 5.) Game logic goes
 on the server, presentation on the client, `shared` is server-to-client only.
 
 **Standard multiplayer level markup**, used by the built-in modes and recommended so levels

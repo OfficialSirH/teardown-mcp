@@ -101,8 +101,8 @@ items are listed at the end. Re-measure after a game update: the probes are in
 - `#include` is resolved before Lua parses: an include inside a `--[[ ]]` comment still loads,
   and a missing file keeps the whole script from loading (section 7). An included file has no
   `#version` line of its own.
-- A script without `#version 2` is silently disabled in multiplayer (it still runs in
-  single-player; section 9).
+- A level script without `#version 2` is silently disabled in multiplayer (it still runs in
+  single-player; section 9). Screen scripts are not level scripts: see the next point.
 - `<screen script="...">` scripts run as version 1 (with `#version 2` the `client` / `server`
   tables do not exist). **Unlike level scripts, they are not disabled in multiplayer**
   (measured 2026-11-22, 2.2.0, multiplayer test, MCP Playground; probe
@@ -116,7 +116,8 @@ items are listed at the end. Re-measure after a game update: the probes are in
   sees the host's state directly (registry, entities), needs no synced keys, and every player
   sees the same picture. The campaign hub computer behaves that way: when the joined client
   operated it, the host's view showed the same tab, list, hover and mouse cursor (seen by the
-  user, 2026-11-22). Its canvas was 640 x 480; its `tick` ran about 37 times a second while
+  user, 2026-11-22). Re-checked 2026-11-28 with the same probe: both windows showed random
+  6084 and "local player 1", and the counters existed in the host's registry only. Its canvas was 640 x 480; its `tick` ran about 37 times a second while
   the game ran faster. The picture appeared a moment after the spawn, not in the first frame.
   (Not measured: how a joined client's mouse and clicks reach the host's script when it
   operates a screen; the hub computer shows that they do.) (An earlier note here said

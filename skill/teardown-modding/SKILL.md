@@ -113,8 +113,11 @@ too: a script that checks `GetBool("level.<mod>.<flag>")` can be driven with `re
   callback, and `Constrain*` called from `server.tick` instead of `server.update`.
 - **No API calls at a script's top level** (while the file loads): only inside callbacks.
 - **Multiplayer needs `version = 2` in `info.txt` and `#version 2` as the first line of every
-  script.** A script without it is switched off in multiplayer without any message; a mod
-  without it is treated as single-player only.
+  level script** (`<script file=...>`, `main.lua`, tools). A level script without it is
+  switched off in multiplayer without any message; a mod without it is treated as
+  single-player only. **Screen scripts are the exception:** a `<screen script=...>` script is
+  always version 1 (plain `init` / `tick` / `draw`, no `#version` line) and does run in
+  multiplayer, once, on the host; every player sees its picture (re-checked 2026-11-28).
 - **`Spawn("<mod id>:path.xml")` from another mod** fails in multiplayer with "blocked in
   multiplayer: mod ... is not listed in mods.available" unless that mod is part of the session
   (built-in mods always are; an installed mod that is not loaded is not). Check
